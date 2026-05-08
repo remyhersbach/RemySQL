@@ -298,6 +298,41 @@ async function getIncomingForeignKeys(connection, tableName) {
     : getSqliteIncomingForeignKeys(connection.path, tableName);
 }
 
+async function getSqliteRelationRows(databasePath, tableName, columnName, value) {
+  if (value === null || value === undefined) {
+    return runSqlite(
+      databasePath,
+      `SELECT * FROM ${quoteSqliteIdentifier(tableName)} WHERE ${quoteSqliteIdentifier(columnName)} IS NULL LIMIT 50;`
+    );
+  }
+
+  return runSqlite(
+    databasePath,
+    `SELECT * FROM ${quoteSqliteIdentifier(tableName)} WHERE ${quoteSqliteIdentifier(columnName)} = ${quoteLiteral(value)} LIMIT 50;`
+  );
+}
+
+async function getMariaRelationRows(connection, tableName, columnName, value) {
+  if (value === null || value === undefined) {
+    return runMariaDb(
+      connection,
+      `SELECT * FROM ${quoteMariaIdentifier(tableName)} WHERE ${quoteMariaIdentifier(columnName)} IS NULL LIMIT 50;`
+    );
+  }
+
+  return runMariaDb(
+    connection,
+    `SELECT * FROM ${quoteMariaIdentifier(tableName)} WHERE ${quoteMariaIdentifier(columnName)} = ? LIMIT 50;`,
+    [value]
+  );
+}
+
+async function getRelationRows(connection, tableName, columnName, value) {
+  return connection.type === 'mariadb'
+    ? getMariaRelationRows(connection, tableName, columnName, value)
+    : getSqliteRelationRows(connection.path, tableName, columnName, value);
+}
+
 function normalizeConnection(connection) {
   const type = connection.type === 'sqlite' ? 'sqlite' : 'mariadb';
 
@@ -459,6 +494,11 @@ ipcMain.handle('connections:remove', (_event, connectionId) => {
 ipcMain.handle('database:schema', async (_event, connection) => {
   const tables = await getTables(connection);
   return { tables };
+});
+
+ipcMain.handle('database:relation-rows', async (_event, { connection, tableName, columnName, value }) => {
+  const rows = await getRelationRows(connection, tableName, columnName, value);
+  return { rows };
 });
 
 ipcMain.handle('database:table', async (_event, { connection, tableName, filter, limit }) => {

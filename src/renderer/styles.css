@@ -748,9 +748,120 @@ tbody tr:hover {
 }
 
 .relation-line {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.relation-button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+}
+
+.relation-value {
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
+  word-break: break-all;
+}
+
+.relation-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+
+.relation-result {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+
+.relation-result-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-weight: 700;
+}
+
+.relation-result-meta span:first-child {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.relation-result-rows {
+  display: grid;
+  gap: 7px;
+}
+
+.relation-result-row {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.relation-result-row > div {
+  display: grid;
+  grid-template-columns: minmax(0, 38%) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--hairline);
+  min-width: 0;
+}
+
+.relation-result-row > div:last-child {
+  border-bottom: 0;
+}
+
+.relation-result-row dt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.relation-result-row dd {
+  margin: 0;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.relation-result-row dd[title]:hover {
+  white-space: normal;
+  word-break: break-all;
 }
 
 .muted-note {
