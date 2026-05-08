@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SQL Base Manager</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="connections-panel">
+        <header class="panel-header">
+          <div>
+            <p class="eyebrow">SQL Base</p>
+            <h1>Database Manager</h1>
+          </div>
+          <button id="newConnectionButton" class="icon-button" title="Nieuwe connectie">+</button>
+        </header>
+
+        <section class="connection-form" id="connectionForm" hidden>
+          <label>
+            Type
+            <select id="connectionTypeSelect">
+              <option value="mariadb">MariaDB</option>
+              <option value="sqlite">SQLite</option>
+            </select>
+          </label>
+          <label>
+            Naam
+            <input id="connectionNameInput" type="text" placeholder="Lokale shop database" />
+          </label>
+          <div id="mariaFields" class="connection-fieldset">
+            <label>
+              Host
+              <input id="mariaHostInput" type="text" value="127.0.0.1" />
+            </label>
+            <label>
+              Poort
+              <input id="mariaPortInput" type="number" min="1" max="65535" value="3306" />
+            </label>
+            <label>
+              User
+              <input id="mariaUserInput" type="text" placeholder="root" />
+            </label>
+            <label>
+              Wachtwoord
+              <input id="mariaPasswordInput" type="password" placeholder="Optioneel" />
+            </label>
+            <label>
+              Database
+              <input id="mariaDatabaseInput" type="text" placeholder="app_database" />
+            </label>
+          </div>
+          <label id="sqlitePathField">
+            SQLite pad
+            <input id="connectionPathInput" type="text" placeholder="/pad/naar/database.sqlite" />
+          </label>
+          <div class="form-actions">
+            <button id="saveConnectionButton" class="primary-button">Opslaan</button>
+            <button id="cancelConnectionButton" class="ghost-button">Sluit</button>
+          </div>
+        </section>
+
+        <div class="section-title">Connecties</div>
+        <div id="connectionsList" class="connections-list"></div>
+      </aside>
+
+      <main class="workspace">
+        <div class="toolbar">
+          <div>
+            <p id="activeConnectionLabel" class="eyebrow">Geen connectie</p>
+            <h2 id="workspaceTitle">Open of maak een connectie</h2>
+          </div>
+          <div class="toolbar-actions">
+            <button id="refreshButton" class="ghost-button" disabled>Ververs</button>
+          </div>
+        </div>
+
+        <nav id="tabsBar" class="tabs-bar"></nav>
+
+        <section id="emptyState" class="empty-state">
+          <h2>Begin met een MariaDB connectie</h2>
+          <p>Gebruik het menu Connecties of de plusknop links. Daarna kun je tabellen openen, filteren en relaties bekijken.</p>
+        </section>
+
+        <section id="tableView" class="table-view" hidden>
+          <div class="table-controls">
+            <div class="segmented-control" role="tablist" aria-label="Weergave">
+              <button id="dataModeButton" class="active" role="tab">Data</button>
+              <button id="structureModeButton" role="tab">Structuur</button>
+            </div>
+            <label class="filter-input">
+              Filter
+              <input id="filterInput" type="search" placeholder="Zoek in alle kolommen" />
+            </label>
+            <label class="limit-input">
+              Limiet
+              <input id="limitInput" type="number" min="1" max="500" value="100" />
+            </label>
+          </div>
+
+          <div class="content-grid">
+            <div class="data-panel">
+              <div id="tableMeta" class="table-meta"></div>
+              <div class="table-scroll">
+                <table id="dataTable"></table>
+              </div>
+            </div>
+
+            <aside class="relations-panel">
+              <header>
+                <p class="eyebrow">Foreign keys</p>
+                <h3>Relaties</h3>
+              </header>
+              <div id="relationsList" class="relations-list"></div>
+            </aside>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

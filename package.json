@@ -1,0 +1,27 @@
+{
+  "name": "sql-base-manager",
+  "version": "0.1.0",
+  "description": "Een kleine Electron database-manager voor MariaDB en SQLite met tabs, filters en relatiesidebar.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "create:sample": "node scripts/create-sample-db.js"
+  },
+  "keywords": [
+    "electron",
+    "mariadb",
+    "mysql",
+    "sqlite",
+    "database",
+    "manager"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^30.5.1"
+  },
+  "dependencies": {
+    "mariadb": "^3.5.2"
+  }
+}
