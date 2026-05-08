@@ -21,13 +21,7 @@ npm run create:sample
 npm start
 ```
 
-Voor MariaDB heb je een lokale client nodig:
-
-```bash
-brew install mariadb
-```
-
-Of zet `SQL_BASE_MYSQL_CLIENT` naar een eigen `mariadb`/`mysql` binary.
+MariaDB werkt via de meegeleverde Node-driver. Je hoeft dus geen lokale `mariadb` of `mysql` command line client te installeren.
 
 Open daarna in de app:
 
@@ -43,4 +37,4 @@ Voor de lokale SQLite demo:
 
 ## Eerste scope
 
-Deze versie gebruikt lokale command line clients via Electron IPC: `mariadb`/`mysql` voor MariaDB en `sqlite3` voor de demo. Dat houdt de basis klein en vermijdt native Node database-drivers. Wachtwoorden worden in deze eerste iteratie lokaal in Electron user data opgeslagen; dat is prima voor een prototype, maar de volgende stap is opslag via Keychain/credential store.
+Deze versie gebruikt de officiële MariaDB Node-driver voor MariaDB en de lokale `sqlite3` command line tool voor de demo. Wachtwoorden worden in deze eerste iteratie lokaal in Electron user data opgeslagen; dat is prima voor een prototype, maar de volgende stap is opslag via Keychain/credential store.

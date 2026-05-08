@@ -3,6 +3,7 @@ const { execFile } = require('node:child_process');
 const { existsSync, readFileSync, writeFileSync, mkdirSync } = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const mariadb = require('mariadb');
 
 let mainWindow;
 
@@ -53,85 +54,58 @@ function runSqlite(databasePath, sql) {
   });
 }
 
-function getMariaDbClients() {
-  return process.env.SQL_BASE_MYSQL_CLIENT ? [process.env.SQL_BASE_MYSQL_CLIENT] : ['mariadb', 'mysql'];
-}
-
-function unescapeMysqlValue(value) {
-  if (value === undefined || value === 'NULL') {
+function normalizeDbValue(value) {
+  if (value === undefined) {
     return null;
   }
 
-  return value
-    .replaceAll('\\\\', '\u0000')
-    .replaceAll('\\t', '\t')
-    .replaceAll('\\n', '\n')
-    .replaceAll('\\r', '\r')
-    .replaceAll('\\0', '\0')
-    .replaceAll('\u0000', '\\');
-}
-
-function parseMysqlTsv(stdout) {
-  const trimmed = stdout.trimEnd();
-  if (!trimmed) {
-    return [];
+  if (typeof value === 'bigint') {
+    return value.toString();
   }
 
-  const lines = trimmed.split(/\r?\n/);
-  const headers = lines.shift().split('\t').map(unescapeMysqlValue);
-  return lines.map((line) => {
-    const cells = line.split('\t').map(unescapeMysqlValue);
-    return Object.fromEntries(headers.map((header, index) => [header, cells[index] ?? null]));
-  });
-}
-
-function runMariaDb(connection, sql) {
-  const args = [
-    '--batch',
-    '--default-character-set=utf8mb4',
-    '--connect-timeout=5',
-    `--host=${connection.host}`,
-    `--port=${connection.port}`,
-    `--user=${connection.user}`,
-    `--execute=${sql}`
-  ];
-
-  if (connection.database) {
-    args.push(connection.database);
+  if (value instanceof Date) {
+    return value.toISOString();
   }
 
-  const clients = getMariaDbClients();
+  if (Buffer.isBuffer(value)) {
+    return value.toString('hex');
+  }
 
-  return new Promise((resolve, reject) => {
-    const tryClient = (index) => {
-      execFile(
-        clients[index],
-        args,
-        {
-          env: { ...process.env, MYSQL_PWD: connection.password || '' },
-          maxBuffer: 1024 * 1024 * 20
-        },
-        (error, stdout, stderr) => {
-          if (error?.code === 'ENOENT' && index < clients.length - 1) {
-            tryClient(index + 1);
-            return;
-          }
+  return value;
+}
 
-          if (error) {
-            const missingClient = error.code === 'ENOENT'
-              ? 'MariaDB/MySQL client niet gevonden. Installeer `mariadb` of zet SQL_BASE_MYSQL_CLIENT naar je client-pad.'
-              : stderr || error.message;
-            reject(new Error(missingClient));
-            return;
-          }
+function normalizeDbRows(rows) {
+  return rows.map((row) => Object.fromEntries(
+    Object.entries(row).map(([key, value]) => [key, normalizeDbValue(value)])
+  ));
+}
 
-          resolve(parseMysqlTsv(stdout));
-        }
-      );
-    };
+async function runMariaDb(connection, sql, values = []) {
+  let client;
 
-    tryClient(0);
-  });
+  try {
+    client = await mariadb.createConnection({
+      host: connection.host,
+      port: Number(connection.port),
+      user: connection.user,
+      password: connection.password || '',
+      database: connection.database,
+      connectTimeout: 5000,
+      charset: 'utf8mb4',
+      dateStrings: true,
+      bigIntAsNumber: false,
+      decimalAsNumber: false
+    });
+
+    const rows = await client.query(sql, values);
+    return Array.isArray(rows) ? normalizeDbRows(rows) : [];
+  } catch (error) {
+    throw new Error(error.sqlMessage || error.message || 'MariaDB query mislukt.');
+  } finally {
+    if (client) {
+      await client.end();
+    }
+  }
 }
 
 async function getSqliteTables(databasePath) {
@@ -208,8 +182,9 @@ async function getMariaColumns(connection, tableName) {
        EXTRA AS extra
      FROM information_schema.COLUMNS
      WHERE TABLE_SCHEMA = DATABASE()
-       AND TABLE_NAME = ${quoteLiteral(tableName)}
-     ORDER BY ORDINAL_POSITION;`
+       AND TABLE_NAME = ?
+     ORDER BY ORDINAL_POSITION;`,
+    [tableName]
   );
 }
 
@@ -227,9 +202,10 @@ async function getMariaForeignKeys(connection, tableName) {
        ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
       AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
      WHERE kcu.TABLE_SCHEMA = DATABASE()
-       AND kcu.TABLE_NAME = ${quoteLiteral(tableName)}
+       AND kcu.TABLE_NAME = ?
        AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
-     ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION;`
+     ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION;`,
+    [tableName]
   );
 }
 
@@ -249,8 +225,9 @@ async function getMariaIncomingForeignKeys(connection, tableName) {
       AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
      WHERE kcu.TABLE_SCHEMA = DATABASE()
        AND kcu.REFERENCED_TABLE_SCHEMA = DATABASE()
-       AND kcu.REFERENCED_TABLE_NAME = ${quoteLiteral(tableName)}
-     ORDER BY kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION;`
+       AND kcu.REFERENCED_TABLE_NAME = ?
+     ORDER BY kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION;`,
+    [tableName]
   );
 }
 
@@ -260,11 +237,12 @@ async function getMariaData(connection, tableName, filter, limit) {
   const searchableColumns = columns.map((column) => column.name);
   const where = String(filter || '').trim()
     ? ` WHERE ${searchableColumns
-        .map((columnName) => `CAST(${quoteMariaIdentifier(columnName)} AS CHAR) LIKE ${quoteLiteral(`%${filter.trim()}%`)}`)
+        .map((columnName) => `CAST(${quoteMariaIdentifier(columnName)} AS CHAR) LIKE ?`)
         .join(' OR ')}`
     : '';
+  const values = String(filter || '').trim() ? searchableColumns.map(() => `%${filter.trim()}%`) : [];
 
-  return runMariaDb(connection, `SELECT * FROM ${quoteMariaIdentifier(tableName)}${where} LIMIT ${safeLimit};`);
+  return runMariaDb(connection, `SELECT * FROM ${quoteMariaIdentifier(tableName)}${where} LIMIT ${safeLimit};`, values);
 }
 
 function getConnectionLabel(connection) {
