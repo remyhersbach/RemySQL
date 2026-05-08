@@ -3,6 +3,8 @@ const { execFile } = require('node:child_process');
 const { existsSync, readFileSync, writeFileSync, mkdirSync } = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+app.name = 'RemySQL';
+
 let mariadb;
 
 let mainWindow;
@@ -393,7 +395,7 @@ function createWindow() {
     height: 860,
     minWidth: 980,
     minHeight: 640,
-    title: 'SQL Base Manager',
+    title: 'RemySQL',
     icon: iconPath,
     backgroundColor: '#f4f6f8',
     webPreferences: {

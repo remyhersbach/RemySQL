@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SQL Base Manager</title>
+    <title>RemySQL</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -13,39 +13,28 @@
           <div class="app-brand">
             <svg class="app-logo" viewBox="0 0 512 512" width="34" height="34" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <defs>
-                <linearGradient id="logo-disc-top" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#7dd3fc"/>
-                  <stop offset="100%" stop-color="#38bdf8"/>
+                <linearGradient id="logo-bg" x1="0" y1="0" x2="0.6" y2="1">
+                  <stop offset="0%" stop-color="#0d1f3c"/>
+                  <stop offset="100%" stop-color="#071428"/>
                 </linearGradient>
-                <linearGradient id="logo-disc-mid" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#38bdf8"/>
+                <linearGradient id="logo-letter" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#93d8fb"/>
                   <stop offset="100%" stop-color="#0ea5e9"/>
                 </linearGradient>
-                <linearGradient id="logo-disc-bot" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#0ea5e9"/>
-                  <stop offset="100%" stop-color="#0284c7"/>
-                </linearGradient>
-                <linearGradient id="logo-body" x1="0" y1="0" x2="1" y2="0">
-                  <stop offset="0%" stop-color="#0369a1"/>
-                  <stop offset="50%" stop-color="#0284c7"/>
-                  <stop offset="100%" stop-color="#075985"/>
+                <linearGradient id="logo-accent" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%" stop-color="#38bdf8"/>
+                  <stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/>
                 </linearGradient>
               </defs>
-              <rect x="102" y="175" width="308" height="185" fill="url(#logo-body)"/>
-              <rect x="378" y="175" width="32" height="185" fill="#0c4a6e" opacity="0.45"/>
-              <ellipse cx="256" cy="364" rx="154" ry="34" fill="#0b1220" opacity="0.32"/>
-              <ellipse cx="256" cy="358" rx="154" ry="34" fill="url(#logo-disc-bot)"/>
-              <ellipse cx="256" cy="350" rx="120" ry="14" fill="#38bdf8" opacity="0.35"/>
-              <ellipse cx="256" cy="271" rx="154" ry="34" fill="#0b1220" opacity="0.28"/>
-              <ellipse cx="256" cy="265" rx="154" ry="34" fill="url(#logo-disc-mid)"/>
-              <ellipse cx="256" cy="257" rx="120" ry="14" fill="#7dd3fc" opacity="0.32"/>
-              <ellipse cx="256" cy="178" rx="154" ry="34" fill="#0b1220" opacity="0.22"/>
-              <ellipse cx="256" cy="172" rx="154" ry="34" fill="url(#logo-disc-top)"/>
-              <ellipse cx="256" cy="161" rx="100" ry="12" fill="#bae6fd" opacity="0.4"/>
-              <ellipse cx="240" cy="158" rx="50" ry="6" fill="#ffffff" opacity="0.22"/>
+              <rect x="0" y="0" width="512" height="512" rx="100" fill="url(#logo-bg)"/>
+              <ellipse cx="200" cy="80" rx="220" ry="90" fill="#1e40af" opacity="0.12"/>
+              <path fill-rule="evenodd" fill="url(#logo-letter)" d="M112,412 L112,104 L316,104 Q400,104 400,194 Q400,272 316,272 L385,412 L335,412 L236,272 L178,272 L178,412 Z M178,144 L314,144 Q356,144 356,194 Q356,228 314,228 L178,228 Z"/>
+              <rect x="418" y="146" width="70" height="14" rx="7" fill="url(#logo-accent)"/>
+              <rect x="418" y="178" width="54" height="14" rx="7" fill="url(#logo-accent)"/>
+              <rect x="418" y="210" width="62" height="14" rx="7" fill="url(#logo-accent)"/>
             </svg>
             <div>
-              <p class="eyebrow">SQL Base</p>
+              <p class="eyebrow">RemySQL</p>
               <h1>Database Manager</h1>
             </div>
           </div>

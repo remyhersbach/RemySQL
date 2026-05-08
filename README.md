@@ -1,4 +1,4 @@
-# SQL Base Manager
+# RemySQL
 
 Een eerste basis voor een DBeaver/SQL Ace-achtige desktop database-manager in Electron.
 
