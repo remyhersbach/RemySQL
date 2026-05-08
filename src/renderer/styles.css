@@ -1,20 +1,111 @@
+/* ── Theme tokens ─────────────────────────────────────────────────────────── */
+
 :root {
-  --bg: #f4f6f8;
+  /* Light theme — gray / light blue, sky-blue accent */
+  --bg: #f6f9fc;
   --surface: #ffffff;
-  --surface-alt: #eef2f5;
-  --border: #d8e0e7;
-  --border-strong: #b8c4cf;
-  --text: #17212b;
-  --muted: #697987;
-  --accent: #0b6f7c;
-  --accent-strong: #075965;
-  --accent-soft: #d9eef1;
-  --danger: #b73131;
-  --warning: #8a6200;
-  --code: #27394a;
-  --row-hover: #f8fbfc;
+  --surface-alt: #eef3f9;
+  --row-hover: #f4f8fc;
+  --th-bg: #f4f7fb;
+
+  --sidebar-bg: #eef3f9;
+  --sidebar-text: #1e293b;
+  --sidebar-text-muted: #64748b;
+  --sidebar-surface: #ffffff;
+  --sidebar-surface-alt: #f6f9fc;
+  --sidebar-hover: #e1e9f2;
+  --sidebar-border: #dbe3ec;
+
+  --interactive-bg: #e6edf5;
+  --interactive-bg-hover: #d6e0eb;
+
+  --border: #e4ebf3;
+  --border-strong: #c8d4e0;
+  --hairline: rgba(15, 23, 42, 0.06);
+
+  --text: #0f172a;
+  --muted: #64748b;
+  --code: #1e293b;
+
+  --accent: #0284c7;
+  --accent-strong: #0369a1;
+  --accent-soft: #e0f2fe;
+  --on-accent: #ffffff;
+
+  --danger: #b91c1c;
+  --danger-text: #b91c1c;
+  --danger-soft: #fee2e2;
+  --warning: #92400e;
+  --warning-bg: #fef3c7;
+  --warning-border: #fcd34d;
+
+  --tab-bg: #e6edf5;
+  --tab-close-hover: #d6e0eb;
+
+  --scroll-thumb: #cbd5e1;
+  --scroll-thumb-hover: #94a3b8;
+  --scroll-track: rgba(15, 23, 42, 0.04);
+
+  --rel-bg: #f8fafc;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 12px 32px rgba(15, 23, 42, 0.10);
+
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
 }
+
+[data-theme="dark"] {
+  /* Dark theme — slate, sky-blue accent */
+  --bg: #0b1220;
+  --surface: #131c2e;
+  --surface-alt: #1c2538;
+  --row-hover: #161f30;
+  --th-bg: #131c2e;
+
+  --sidebar-bg: #080d18;
+  --sidebar-text: #e2e8f0;
+  --sidebar-text-muted: #8a98ac;
+  --sidebar-surface: #131c2e;
+  --sidebar-surface-alt: #1c2538;
+  --sidebar-hover: #1f2a3f;
+  --sidebar-border: #1a2336;
+
+  --interactive-bg: #1c2538;
+  --interactive-bg-hover: #2a3550;
+
+  --border: #1f2a3f;
+  --border-strong: #2c3954;
+  --hairline: rgba(255, 255, 255, 0.06);
+
+  --text: #e2e8f0;
+  --muted: #8a98ac;
+  --code: #cbd5e1;
+
+  --accent: #0ea5e9;
+  --accent-strong: #38bdf8;
+  --accent-soft: #0c4a6e;
+  --on-accent: #ffffff;
+
+  --danger: #f87171;
+  --danger-text: #fca5a5;
+  --danger-soft: #3a1818;
+  --warning: #fbbf24;
+  --warning-bg: #2a1d05;
+  --warning-border: #5b3b08;
+
+  --tab-bg: #131c2e;
+  --tab-close-hover: #1f2a3f;
+
+  --scroll-thumb: #2c3954;
+  --scroll-thumb-hover: #3e4c6e;
+  --scroll-track: rgba(255, 255, 255, 0.04);
+
+  --rel-bg: #131c2e;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.55);
+}
+
+/* ── Reset / base ────────────────────────────────────────────────────────── */
 
 * {
   box-sizing: border-box;
@@ -30,6 +121,7 @@ body {
   background: var(--bg);
   color: var(--text);
   letter-spacing: 0;
+  font-size: 13px;
 }
 
 button,
@@ -48,9 +140,12 @@ button:disabled {
   opacity: 0.5;
 }
 
+/* ── App shell ───────────────────────────────────────────────────────────── */
+
 .app-shell {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
 }
@@ -58,12 +153,15 @@ button:disabled {
 .connections-panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   min-width: 0;
-  padding: 18px;
-  background: #17212b;
-  color: #f7fafc;
-  border-right: 1px solid #101820;
+  min-height: 0;
+  overflow: hidden;
+  padding: 16px;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  border-right: 1px solid var(--sidebar-border);
+  box-shadow: inset -1px 0 0 var(--hairline);
 }
 
 .panel-header,
@@ -72,7 +170,25 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 14px;
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.app-logo {
+  flex-shrink: 0;
+  border-radius: 7px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 5px;
+  flex-shrink: 0;
 }
 
 .panel-header h1,
@@ -80,65 +196,126 @@ button:disabled {
 .relations-panel h3,
 .empty-state h2 {
   margin: 0;
-  line-height: 1.1;
+  line-height: 1.15;
 }
 
 .panel-header h1 {
-  font-size: 22px;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .toolbar h2 {
-  font-size: 22px;
+  font-size: 17px;
+  font-weight: 700;
 }
 
 .relations-panel h3 {
-  font-size: 16px;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .eyebrow {
-  margin: 0 0 5px;
+  margin: 0 0 4px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
   text-transform: uppercase;
 }
 
 .connections-panel .eyebrow {
-  color: #a7b6c3;
+  color: var(--sidebar-text-muted);
 }
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
 
 .icon-button {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   place-items: center;
-  border-radius: 8px;
-  background: #2c3a47;
-  color: #ffffff;
-  font-size: 22px;
+  border-radius: 7px;
+  background: var(--sidebar-surface-alt);
+  color: var(--sidebar-text);
+  font-size: 16px;
   line-height: 1;
+  transition: background 120ms ease;
 }
 
 .icon-button:hover {
-  background: #3a4b59;
+  background: var(--sidebar-hover);
 }
+
+.icon-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.icon-button .theme-icon-sun {
+  display: none;
+}
+
+[data-theme="dark"] .icon-button .theme-icon-sun {
+  display: block;
+}
+
+[data-theme="dark"] .icon-button .theme-icon-moon {
+  display: none;
+}
+
+.primary-button,
+.ghost-button {
+  min-height: 32px;
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-weight: 600;
+  font-size: 12px;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.primary-button {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.primary-button:hover {
+  background: var(--accent-strong);
+}
+
+.ghost-button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.connections-panel .ghost-button {
+  border-color: var(--sidebar-border);
+  background: var(--sidebar-surface);
+  color: var(--sidebar-text);
+}
+
+.ghost-button:hover {
+  border-color: var(--border-strong);
+}
+
+/* ── Connection form ─────────────────────────────────────────────────────── */
 
 .connection-form {
   display: grid;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid #3a4b59;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--sidebar-border);
   border-radius: 8px;
-  background: #22303c;
+  background: var(--sidebar-surface);
+  box-shadow: var(--shadow-sm);
 }
 
 label {
   display: grid;
-  gap: 6px;
+  gap: 5px;
   color: inherit;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 input,
@@ -146,11 +323,18 @@ select {
   width: 100%;
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 9px 10px;
-  background: #ffffff;
+  border-radius: 5px;
+  padding: 7px 9px;
+  background: var(--surface);
   color: var(--text);
+  font-size: 12px;
   outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+input:hover,
+select:hover {
+  border-color: var(--border-strong);
 }
 
 input:focus,
@@ -161,8 +345,8 @@ select:focus {
 
 .connection-fieldset {
   display: grid;
-  grid-template-columns: 1fr 92px;
-  gap: 10px;
+  grid-template-columns: 1fr 88px;
+  gap: 9px;
 }
 
 .connection-fieldset label:nth-child(n + 3) {
@@ -172,64 +356,87 @@ select:focus {
 .form-actions,
 .toolbar-actions {
   display: flex;
-  gap: 8px;
+  gap: 7px;
 }
 
-.primary-button,
-.ghost-button {
-  min-height: 34px;
-  border-radius: 6px;
-  padding: 8px 12px;
-  font-weight: 750;
-}
-
-.primary-button {
-  background: var(--accent);
-  color: #ffffff;
-}
-
-.primary-button:hover {
-  background: var(--accent-strong);
-}
-
-.ghost-button {
-  border: 1px solid var(--border);
-  background: #ffffff;
-  color: var(--text);
-}
-
-.connections-panel .ghost-button {
-  border-color: #4d5c68;
-  background: #22303c;
-  color: #ffffff;
-}
-
-.ghost-button:hover {
-  border-color: var(--border-strong);
-}
+/* ── Section title ───────────────────────────────────────────────────────── */
 
 .section-title {
-  margin-top: 4px;
-  color: #a7b6c3;
-  font-size: 11px;
-  font-weight: 850;
+  margin-top: 2px;
+  color: var(--sidebar-text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
   text-transform: uppercase;
 }
 
+/* ── Connections list ─────────────────────────────────────────────────────── */
+
 .connections-list {
-  display: grid;
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   padding-right: 2px;
 }
 
 .connection-item {
-  border: 1px solid #334453;
-  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 7px;
   overflow: hidden;
-  background: #202d38;
+  background: var(--sidebar-surface);
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
 }
+
+.connection-item:has(.connection-button.active) {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.connection-item:has(.connection-button.active) .tables-list {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: scroll;
+}
+
+/* ── Scrollbars ──────────────────────────────────────────────────────────── */
+
+.tables-list::-webkit-scrollbar,
+.relations-list::-webkit-scrollbar,
+.table-scroll::-webkit-scrollbar,
+.tabs-bar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.tables-list::-webkit-scrollbar-track,
+.relations-list::-webkit-scrollbar-track,
+.table-scroll::-webkit-scrollbar-track,
+.tabs-bar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tables-list::-webkit-scrollbar-thumb,
+.relations-list::-webkit-scrollbar-thumb,
+.table-scroll::-webkit-scrollbar-thumb,
+.tabs-bar::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 4px;
+}
+
+.tables-list::-webkit-scrollbar-thumb:hover,
+.relations-list::-webkit-scrollbar-thumb:hover,
+.table-scroll::-webkit-scrollbar-thumb:hover,
+.tabs-bar::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+/* ── Connection / table buttons ──────────────────────────────────────────── */
 
 .connection-button,
 .table-button {
@@ -237,23 +444,35 @@ select:focus {
   align-items: center;
   width: 100%;
   min-width: 0;
-  gap: 10px;
-  padding: 11px 12px;
+  gap: 9px;
+  padding: 9px 11px;
   background: transparent;
   color: inherit;
   text-align: left;
+  font-size: 12px;
+}
+
+.connection-button:hover,
+.table-button:hover {
+  background: var(--sidebar-hover);
 }
 
 .connection-button.active,
 .table-button.active {
-  background: #0b6f7c;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.connection-button.active .connection-path,
+.table-button.active .table-kind {
+  color: rgba(255, 255, 255, 0.78);
 }
 
 .connection-name,
 .table-name {
   min-width: 0;
   overflow: hidden;
-  font-weight: 800;
+  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -262,8 +481,8 @@ select:focus {
 .table-kind {
   min-width: 0;
   overflow: hidden;
-  color: #b8c4cf;
-  font-size: 12px;
+  color: var(--sidebar-text-muted);
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -271,51 +490,55 @@ select:focus {
 .connection-actions {
   display: flex;
   justify-content: flex-end;
-  padding: 0 8px 8px;
+  padding: 0 7px 7px;
 }
 
 .remove-button {
-  border-radius: 6px;
-  padding: 5px 8px;
+  border-radius: 5px;
+  padding: 4px 8px;
   background: transparent;
-  color: #f0b6b6;
-  font-size: 12px;
+  color: var(--danger-text);
+  font-size: 11px;
 }
 
 .remove-button:hover {
-  background: #43252a;
+  background: var(--danger-soft);
 }
 
 .tables-list {
   display: grid;
   gap: 1px;
-  padding: 5px;
-  border-top: 1px solid #334453;
+  padding: 4px;
+  border-top: 1px solid var(--sidebar-border);
 }
 
 .table-button {
-  border-radius: 6px;
-  padding: 8px;
+  border-radius: 5px;
+  padding: 7px 8px;
 }
+
+/* ── Workspace ───────────────────────────────────────────────────────────── */
 
 .workspace {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
   overflow: hidden;
+  background: var(--bg);
 }
 
 .toolbar {
-  padding: 18px 22px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+  box-shadow: 0 1px 0 var(--hairline);
 }
 
 .tabs-bar {
   display: flex;
   min-width: 0;
-  gap: 4px;
-  padding: 8px 10px 0;
+  gap: 3px;
+  padding: 7px 9px 0;
   border-bottom: 1px solid var(--border);
   background: var(--surface-alt);
   overflow-x: auto;
@@ -324,15 +547,16 @@ select:focus {
 .tab-button {
   display: flex;
   align-items: center;
-  gap: 10px;
-  max-width: 240px;
+  gap: 9px;
+  max-width: 220px;
   border: 1px solid var(--border);
   border-bottom: 0;
-  border-radius: 8px 8px 0 0;
-  padding: 9px 10px;
-  background: #e5ebf0;
+  border-radius: 7px 7px 0 0;
+  padding: 7px 9px;
+  background: var(--tab-bg);
   color: var(--text);
-  font-weight: 750;
+  font-weight: 600;
+  font-size: 12px;
 }
 
 .tab-button.active {
@@ -347,15 +571,16 @@ select:focus {
 
 .tab-close {
   display: grid;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   place-items: center;
-  border-radius: 6px;
+  border-radius: 5px;
   color: var(--muted);
+  font-size: 12px;
 }
 
 .tab-close:hover {
-  background: #d9e2e9;
+  background: var(--tab-close-hover);
   color: var(--text);
 }
 
@@ -363,15 +588,20 @@ select:focus {
   display: grid;
   align-content: center;
   justify-items: center;
-  gap: 10px;
-  padding: 32px;
+  gap: 8px;
+  padding: 28px;
   color: var(--muted);
   text-align: center;
+  font-size: 12px;
 }
 
 .empty-state h2 {
   color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
 }
+
+/* ── Table view ──────────────────────────────────────────────────────────── */
 
 .table-view {
   display: grid;
@@ -383,40 +613,41 @@ select:focus {
 
 .table-controls {
   display: grid;
-  grid-template-columns: auto minmax(220px, 420px) 110px;
+  grid-template-columns: auto minmax(220px, 420px) 100px;
   align-items: end;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: 11px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border);
 }
 
 .segmented-control {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  width: 190px;
-  min-height: 38px;
+  width: 170px;
+  min-height: 34px;
   padding: 3px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 7px;
   background: var(--surface-alt);
 }
 
 .segmented-control button {
-  border-radius: 6px;
+  border-radius: 5px;
   background: transparent;
   color: var(--muted);
-  font-weight: 800;
+  font-weight: 700;
+  font-size: 12px;
 }
 
 .segmented-control button.active {
   background: var(--surface);
   color: var(--accent-strong);
-  box-shadow: 0 1px 3px rgb(23 33 43 / 14%);
+  box-shadow: var(--shadow-sm);
 }
 
 .content-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 330px;
+  grid-template-columns: minmax(0, 1fr) 310px;
   min-height: 0;
   overflow: hidden;
 }
@@ -429,11 +660,11 @@ select:focus {
 }
 
 .table-meta {
-  min-height: 40px;
-  padding: 12px 16px;
+  min-height: 36px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .table-scroll {
@@ -446,14 +677,14 @@ table {
   width: 100%;
   min-width: max-content;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 th,
 td {
-  max-width: 340px;
+  max-width: 320px;
   border-bottom: 1px solid var(--border);
-  padding: 9px 12px;
+  padding: 7px 11px;
   overflow: hidden;
   text-align: left;
   text-overflow: ellipsis;
@@ -464,41 +695,44 @@ th {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: #f8fafc;
+  background: var(--th-bg);
   color: var(--code);
-  font-size: 12px;
-  font-weight: 850;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
 }
 
 tbody tr:hover {
   background: var(--row-hover);
 }
 
+/* ── Relations panel ─────────────────────────────────────────────────────── */
+
 .relations-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
-  padding: 16px;
+  padding: 14px;
   border-left: 1px solid var(--border);
-  background: #f8fafc;
+  background: var(--rel-bg);
   overflow: hidden;
 }
 
 .relations-list {
   display: grid;
   align-content: start;
-  gap: 10px;
+  gap: 9px;
   overflow: auto;
 }
 
 .relation-card {
   display: grid;
-  gap: 8px;
-  padding: 12px;
+  gap: 7px;
+  padding: 11px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #ffffff;
+  border-radius: 7px;
+  background: var(--surface);
 }
 
 .relation-card strong {
@@ -507,43 +741,49 @@ tbody tr:hover {
 
 .relation-kind {
   color: var(--accent-strong);
-  font-size: 11px;
-  font-weight: 850;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
   text-transform: uppercase;
 }
 
 .relation-line {
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .muted-note {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
+/* ── Toast ───────────────────────────────────────────────────────────────── */
+
 .toast {
   position: fixed;
-  right: 18px;
-  bottom: 18px;
-  max-width: 440px;
-  border: 1px solid #d6c58a;
-  border-radius: 8px;
-  padding: 12px 14px;
-  background: #fff7d8;
+  right: 16px;
+  bottom: 16px;
+  max-width: 420px;
+  border: 1px solid var(--warning-border);
+  border-radius: 7px;
+  padding: 10px 13px;
+  background: var(--warning-bg);
   color: var(--warning);
-  box-shadow: 0 14px 40px rgb(23 33 43 / 16%);
+  font-size: 12px;
+  box-shadow: var(--shadow-md);
 }
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
 
 @media (max-width: 1120px) {
   .app-shell {
-    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-columns: 270px minmax(0, 1fr);
   }
 
   .content-grid {
-    grid-template-columns: minmax(0, 1fr) 280px;
+    grid-template-columns: minmax(0, 1fr) 270px;
   }
 
   .table-controls {

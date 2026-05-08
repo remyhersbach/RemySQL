@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('sqlBase', {
   removeConnection: (connectionId) => ipcRenderer.invoke('connections:remove', connectionId),
   loadSchema: (connection) => ipcRenderer.invoke('database:schema', connection),
   loadTable: (payload) => ipcRenderer.invoke('database:table', payload),
+  loadRelationRows: (payload) => ipcRenderer.invoke('database:relation-rows', payload),
   onNewMariaDbConnection: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('connection:new-mariadb', listener);

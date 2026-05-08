@@ -1,9 +1,9 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage } = require('electron');
 const { execFile } = require('node:child_process');
 const { existsSync, readFileSync, writeFileSync, mkdirSync } = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const mariadb = require('mariadb');
+let mariadb;
 
 let mainWindow;
 
@@ -81,6 +81,7 @@ function normalizeDbRows(rows) {
 }
 
 async function runMariaDb(connection, sql, values = []) {
+  if (!mariadb) mariadb = await import('mariadb');
   let client;
 
   try {
@@ -351,12 +352,14 @@ function sameConnection(left, right) {
 }
 
 function createWindow() {
+  const iconPath = path.join(__dirname, '..', 'assets', 'icon.png');
   mainWindow = new BrowserWindow({
     width: 1380,
     height: 860,
     minWidth: 980,
     minHeight: 640,
     title: 'SQL Base Manager',
+    icon: iconPath,
     backgroundColor: '#f4f6f8',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -480,6 +483,11 @@ ipcMain.handle('database:table', async (_event, { connection, tableName, filter,
 app.whenReady().then(() => {
   createMenu();
   createWindow();
+
+  if (process.platform === 'darwin') {
+    const iconPath = path.join(__dirname, '..', 'assets', 'icon.png');
+    app.dock.setIcon(nativeImage.createFromPath(iconPath));
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

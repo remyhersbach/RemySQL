@@ -5,11 +5,14 @@ const state = {
   tabs: [],
   activeTabId: null,
   tablePayloadByTab: new Map(),
+  selectedRowIndexByTab: new Map(),
+  relationLookupByTab: new Map(),
   mode: 'data',
   filterTimer: null
 };
 
 const elements = {
+  themeToggleButton: document.querySelector('#themeToggleButton'),
   newConnectionButton: document.querySelector('#newConnectionButton'),
   connectionForm: document.querySelector('#connectionForm'),
   connectionTypeSelect: document.querySelector('#connectionTypeSelect'),
@@ -72,6 +75,31 @@ function formatValue(value) {
     return '<span class="muted-note">NULL</span>';
   }
   return escapeHtml(value);
+}
+
+function formatPlainValue(value) {
+  if (value === null || value === undefined) {
+    return 'NULL';
+  }
+
+  return String(value);
+}
+
+function getRelationKey(kind, index) {
+  return `${kind}:${index}`;
+}
+
+function getOutgoingRelationByColumn(payload, columnName) {
+  const index = (payload.relations?.outgoing || []).findIndex((relation) => relation.fromColumn === columnName);
+
+  if (index === -1) {
+    return null;
+  }
+
+  return {
+    index,
+    relation: payload.relations.outgoing[index]
+  };
 }
 
 function getConnectionSummary(connection) {
@@ -191,6 +219,12 @@ async function removeConnection(connectionId) {
   state.connections = await window.sqlBase.removeConnection(connectionId);
   state.schemaByConnection.delete(connectionId);
   state.tabs = state.tabs.filter((tab) => tab.connectionId !== connectionId);
+  for (const tabId of [...state.selectedRowIndexByTab.keys()]) {
+    if (!state.tabs.some((tab) => tab.id === tabId)) {
+      state.selectedRowIndexByTab.delete(tabId);
+      state.relationLookupByTab.delete(tabId);
+    }
+  }
   if (state.activeConnectionId === connectionId) {
     state.activeConnectionId = state.connections[0]?.id || null;
     if (state.activeConnectionId) {
@@ -239,6 +273,10 @@ async function loadActiveTable() {
       limit: elements.limitInput.value
     });
     state.tablePayloadByTab.set(tab.id, payload);
+    state.relationLookupByTab.delete(tab.id);
+    if ((state.selectedRowIndexByTab.get(tab.id) ?? -1) >= payload.rows.length) {
+      state.selectedRowIndexByTab.delete(tab.id);
+    }
     renderTableView();
   } catch (error) {
     showToast(error.message);
@@ -249,6 +287,8 @@ function closeTab(tabId) {
   const index = state.tabs.findIndex((tab) => tab.id === tabId);
   state.tabs = state.tabs.filter((tab) => tab.id !== tabId);
   state.tablePayloadByTab.delete(tabId);
+  state.selectedRowIndexByTab.delete(tabId);
+  state.relationLookupByTab.delete(tabId);
 
   if (state.activeTabId === tabId) {
     state.activeTabId = state.tabs[Math.max(0, index - 1)]?.id || state.tabs[0]?.id || null;
@@ -259,6 +299,15 @@ function closeTab(tabId) {
 }
 
 function renderConnections() {
+  const scrollPositions = new Map();
+  for (const item of elements.connectionsList.querySelectorAll('.connection-item')) {
+    const idEl = item.querySelector('[data-connection-id]');
+    const list = item.querySelector('.tables-list');
+    if (idEl && list && list.scrollTop > 0) {
+      scrollPositions.set(idEl.dataset.connectionId, list.scrollTop);
+    }
+  }
+
   elements.connectionsList.innerHTML = '';
 
   if (!state.connections.length) {
@@ -298,6 +347,15 @@ function renderConnections() {
 
     elements.connectionsList.appendChild(item);
   }
+
+  for (const item of elements.connectionsList.querySelectorAll('.connection-item')) {
+    const idEl = item.querySelector('[data-connection-id]');
+    const list = item.querySelector('.tables-list');
+    const saved = idEl ? scrollPositions.get(idEl.dataset.connectionId) : undefined;
+    if (list && saved) {
+      list.scrollTop = saved;
+    }
+  }
 }
 
 function renderTabs() {
@@ -314,8 +372,31 @@ function renderTabs() {
 }
 
 function renderDataTable(payload) {
+  const tab = getActiveTab();
   const columns = payload.columns || [];
   const rows = payload.rows || [];
+  const selectedRowIndex = state.selectedRowIndexByTab.get(tab?.id);
+  const renderCell = (row, column, rowIndex) => {
+    const relationMatch = getOutgoingRelationByColumn(payload, column.name);
+    const value = row[column.name];
+
+    if (!relationMatch) {
+      return `<td title="${escapeHtml(formatPlainValue(value))}">${formatValue(value)}</td>`;
+    }
+
+    return `
+      <td class="relation-cell" title="Open ${escapeHtml(relationMatch.relation.toTable)} voor ${escapeHtml(formatPlainValue(value))}">
+        <button
+          class="relation-value-button"
+          data-row-index="${rowIndex}"
+          data-relation-kind="outgoing"
+          data-relation-index="${relationMatch.index}"
+        >
+          ${formatValue(value)}
+        </button>
+      </td>
+    `;
+  };
   elements.tableMeta.textContent = `${rows.length} rijen geladen, ${columns.length} kolommen`;
   elements.dataTable.innerHTML = `
     <thead>
@@ -326,14 +407,45 @@ function renderDataTable(payload) {
         rows.length
           ? rows
               .map(
-                (row) => `
-                  <tr>${columns.map((column) => `<td title="${escapeHtml(row[column.name] ?? '')}">${formatValue(row[column.name])}</td>`).join('')}</tr>
+                (row, index) => `
+                  <tr class="${index === selectedRowIndex ? 'selected-row' : ''}" data-row-index="${index}">
+                    ${columns.map((column) => renderCell(row, column, index)).join('')}
+                  </tr>
                 `
               )
               .join('')
           : `<tr><td colspan="${Math.max(columns.length, 1)}" class="muted-note">Geen rijen gevonden.</td></tr>`
       }
     </tbody>
+  `;
+}
+
+function renderRelationRows(rows) {
+  if (!rows.length) {
+    return '<p class="muted-note">Geen gekoppelde rij gevonden.</p>';
+  }
+
+  return `
+    <div class="relation-result-rows">
+      ${rows
+        .map(
+          (row) => `
+            <dl class="relation-result-row">
+              ${Object.entries(row)
+                .map(
+                  ([key, value]) => `
+                    <div>
+                      <dt>${escapeHtml(key)}</dt>
+                      <dd title="${escapeHtml(formatPlainValue(value))}">${formatValue(value)}</dd>
+                    </div>
+                  `
+                )
+                .join('')}
+            </dl>
+          `
+        )
+        .join('')}
+    </div>
   `;
 }
 
@@ -371,25 +483,48 @@ function renderStructureTable(payload) {
 function renderRelations(payload) {
   const outgoing = payload.relations?.outgoing || [];
   const incoming = payload.relations?.incoming || [];
+  const tab = getActiveTab();
+  const selectedRowIndex = state.selectedRowIndexByTab.get(tab?.id);
+  const selectedRow = Number.isInteger(selectedRowIndex) ? payload.rows?.[selectedRowIndex] : null;
+  const lookup = state.relationLookupByTab.get(tab?.id);
+  const selectedNote = selectedRow
+    ? `Geselecteerde rij ${selectedRowIndex + 1}`
+    : 'Klik op een waarde in de foreign-key kolom.';
+  const renderCard = (relation, kind, index) => {
+    const relationKey = getRelationKey(kind, index);
+    const isActive = lookup?.key === relationKey;
+    const valueColumn = kind === 'outgoing' ? relation.fromColumn : relation.toColumn;
+    const relationValue = selectedRow ? selectedRow[valueColumn] : undefined;
+    const label = kind === 'outgoing' ? 'Verwijst naar' : 'Wordt gebruikt door';
+    const title = kind === 'outgoing' ? relation.toTable : relation.fromTable;
+    const lookupHtml = isActive
+      ? `
+        <div class="relation-result">
+          <div class="relation-result-meta">
+            <span>${escapeHtml(valueColumn)} = ${formatValue(lookup.value)}</span>
+            <span>${lookup.status === 'loading' ? 'Laden...' : `${lookup.rows?.length || 0} gevonden`}</span>
+          </div>
+          ${lookup.status === 'error' ? `<p class="muted-note">${escapeHtml(lookup.error)}</p>` : ''}
+          ${lookup.status === 'ready' ? renderRelationRows(lookup.rows || []) : ''}
+        </div>
+      `
+      : '';
+
+    return `
+      <article class="relation-card ${isActive ? 'active' : ''}">
+        <div class="relation-button">
+          <span class="relation-kind">${label}</span>
+          <strong>${escapeHtml(title)}</strong>
+          <span class="relation-line">${escapeHtml(relation.fromTable)}.${escapeHtml(relation.fromColumn)} -> ${escapeHtml(relation.toTable)}.${escapeHtml(relation.toColumn)}</span>
+          <span class="relation-value">${selectedRow ? `${escapeHtml(valueColumn)} = ${formatValue(relationValue)}` : escapeHtml(selectedNote)}</span>
+        </div>
+        ${lookupHtml}
+      </article>
+    `;
+  };
   const cards = [
-    ...outgoing.map(
-      (relation) => `
-        <article class="relation-card">
-          <span class="relation-kind">Verwijst naar</span>
-          <strong>${escapeHtml(relation.toTable)}</strong>
-          <span class="relation-line">${escapeHtml(relation.fromTable)}.${escapeHtml(relation.fromColumn)} -> ${escapeHtml(relation.toTable)}.${escapeHtml(relation.toColumn)}</span>
-        </article>
-      `
-    ),
-    ...incoming.map(
-      (relation) => `
-        <article class="relation-card">
-          <span class="relation-kind">Wordt gebruikt door</span>
-          <strong>${escapeHtml(relation.fromTable)}</strong>
-          <span class="relation-line">${escapeHtml(relation.fromTable)}.${escapeHtml(relation.fromColumn)} -> ${escapeHtml(relation.toTable)}.${escapeHtml(relation.toColumn)}</span>
-        </article>
-      `
-    )
+    ...outgoing.map((relation, index) => renderCard(relation, 'outgoing', index)),
+    ...incoming.map((relation, index) => renderCard(relation, 'incoming', index))
   ];
 
   elements.relationsList.innerHTML = cards.length
@@ -435,11 +570,97 @@ function renderTableView() {
   renderRelations(payload);
 }
 
+async function loadRelationLookup(kind, index) {
+  const tab = getActiveTab();
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  const connection = state.connections.find((item) => item.id === tab?.connectionId);
+  const selectedRowIndex = state.selectedRowIndexByTab.get(tab?.id);
+  const selectedRow = Number.isInteger(selectedRowIndex) ? payload?.rows?.[selectedRowIndex] : null;
+
+  if (!tab || !payload || !connection) {
+    return;
+  }
+
+  if (!selectedRow) {
+    showToast('Selecteer eerst een rij in de tabel.');
+    return;
+  }
+
+  const relation = kind === 'outgoing'
+    ? payload.relations?.outgoing?.[index]
+    : payload.relations?.incoming?.[index];
+
+  if (!relation) {
+    return;
+  }
+
+  const sourceColumn = kind === 'outgoing' ? relation.fromColumn : relation.toColumn;
+  const targetTable = kind === 'outgoing' ? relation.toTable : relation.fromTable;
+  const targetColumn = kind === 'outgoing' ? relation.toColumn : relation.fromColumn;
+  const value = selectedRow[sourceColumn];
+  const key = getRelationKey(kind, index);
+
+  state.relationLookupByTab.set(tab.id, {
+    key,
+    status: 'loading',
+    value,
+    rows: []
+  });
+  renderRelations(payload);
+
+  try {
+    const result = await window.sqlBase.loadRelationRows({
+      connection,
+      tableName: targetTable,
+      columnName: targetColumn,
+      value
+    });
+
+    state.relationLookupByTab.set(tab.id, {
+      key,
+      status: 'ready',
+      value,
+      rows: result.rows || []
+    });
+  } catch (error) {
+    state.relationLookupByTab.set(tab.id, {
+      key,
+      status: 'error',
+      value,
+      rows: [],
+      error: error.message
+    });
+  }
+
+  renderRelations(payload);
+}
+
 function render() {
   renderConnections();
   renderTabs();
   renderTableView();
 }
+
+function applyTheme(theme) {
+  const next = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('sqlbase.theme', next); } catch {}
+}
+
+(function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem('sqlbase.theme'); } catch {}
+  if (saved === 'dark' || saved === 'light') {
+    applyTheme(saved);
+  } else {
+    applyTheme(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  }
+})();
+
+elements.themeToggleButton.addEventListener('click', () => {
+  const current = document.documentElement.getAttribute('data-theme');
+  applyTheme(current === 'dark' ? 'light' : 'dark');
+});
 
 elements.newConnectionButton.addEventListener('click', () => {
   if (elements.connectionForm.hidden) {
@@ -522,6 +743,27 @@ elements.filterInput.addEventListener('input', () => {
 });
 
 elements.limitInput.addEventListener('change', loadActiveTable);
+
+elements.dataTable.addEventListener('click', async (event) => {
+  const relationValueButton = event.target.closest('[data-relation-kind]');
+  const row = event.target.closest('[data-row-index]');
+  const tab = getActiveTab();
+
+  if (!row || !tab) {
+    return;
+  }
+
+  state.selectedRowIndexByTab.set(tab.id, Number(row.dataset.rowIndex));
+  state.relationLookupByTab.delete(tab.id);
+  renderTableView();
+
+  if (relationValueButton) {
+    await loadRelationLookup(
+      relationValueButton.dataset.relationKind,
+      Number(relationValueButton.dataset.relationIndex)
+    );
+  }
+});
 
 elements.refreshButton.addEventListener('click', async () => {
   await loadSchemaForActiveConnection();
