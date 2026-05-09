@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('sqlBase', {
   loadSchema: (connection) => ipcRenderer.invoke('database:schema', connection),
   loadTable: (payload) => ipcRenderer.invoke('database:table', payload),
   loadRelationRows: (payload) => ipcRenderer.invoke('database:relation-rows', payload),
+  insertRows: (payload) => ipcRenderer.invoke('database:insert-rows', payload),
+  updateRows: (payload) => ipcRenderer.invoke('database:update-rows', payload),
   onNewMariaDbConnection: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('connection:new-mariadb', listener);

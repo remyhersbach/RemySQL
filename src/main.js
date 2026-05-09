@@ -335,6 +335,53 @@ async function getRelationRows(connection, tableName, columnName, value) {
     : getSqliteRelationRows(connection.path, tableName, columnName, value);
 }
 
+async function updateSqliteRow(databasePath, tableName, setValues, whereValues) {
+  const setClauses = Object.entries(setValues)
+    .map(([k, v]) => `${quoteSqliteIdentifier(k)} = ${v === null ? 'NULL' : quoteLiteral(v)}`)
+    .join(', ');
+  const whereClauses = Object.entries(whereValues)
+    .map(([k, v]) => v === null
+      ? `${quoteSqliteIdentifier(k)} IS NULL`
+      : `${quoteSqliteIdentifier(k)} = ${quoteLiteral(v)}`)
+    .join(' AND ');
+  return runSqlite(databasePath, `UPDATE ${quoteSqliteIdentifier(tableName)} SET ${setClauses} WHERE ${whereClauses};`);
+}
+
+async function updateMariaRow(connection, tableName, setValues, whereValues) {
+  const setEntries = Object.entries(setValues);
+  const whereEntries = Object.entries(whereValues);
+  const setClauses = setEntries.map(([k]) => `${quoteMariaIdentifier(k)} = ?`).join(', ');
+  const whereClauses = whereEntries
+    .map(([k, v]) => v === null ? `${quoteMariaIdentifier(k)} IS NULL` : `${quoteMariaIdentifier(k)} = ?`)
+    .join(' AND ');
+  const values = [
+    ...setEntries.map(([, v]) => v),
+    ...whereEntries.filter(([, v]) => v !== null).map(([, v]) => v)
+  ];
+  return runMariaDb(connection, `UPDATE ${quoteMariaIdentifier(tableName)} SET ${setClauses} WHERE ${whereClauses};`, values);
+}
+
+async function insertSqliteRow(databasePath, tableName, values) {
+  const entries = Object.entries(values).filter(([, v]) => v !== '' && v !== null && v !== undefined);
+  if (!entries.length) {
+    return runSqlite(databasePath, `INSERT INTO ${quoteSqliteIdentifier(tableName)} DEFAULT VALUES;`);
+  }
+  const cols = entries.map(([k]) => quoteSqliteIdentifier(k)).join(', ');
+  const vals = entries.map(([, v]) => quoteLiteral(v)).join(', ');
+  return runSqlite(databasePath, `INSERT INTO ${quoteSqliteIdentifier(tableName)} (${cols}) VALUES (${vals});`);
+}
+
+async function insertMariaRow(connection, tableName, values) {
+  const entries = Object.entries(values).filter(([, v]) => v !== '' && v !== null && v !== undefined);
+  if (!entries.length) {
+    return runMariaDb(connection, `INSERT INTO ${quoteMariaIdentifier(tableName)} () VALUES ();`);
+  }
+  const cols = entries.map(([k]) => quoteMariaIdentifier(k)).join(', ');
+  const placeholders = entries.map(() => '?').join(', ');
+  const vals = entries.map(([, v]) => v);
+  return runMariaDb(connection, `INSERT INTO ${quoteMariaIdentifier(tableName)} (${cols}) VALUES (${placeholders});`, vals);
+}
+
 function normalizeConnection(connection) {
   const type = connection.type === 'sqlite' ? 'sqlite' : 'mariadb';
 
@@ -520,6 +567,40 @@ ipcMain.handle('database:table', async (_event, { connection, tableName, filter,
     },
     label: getConnectionLabel(connection)
   };
+});
+
+ipcMain.handle('database:update-rows', async (_event, { connection, tableName, updates }) => {
+  const results = [];
+  for (const { setValues, whereValues } of updates) {
+    try {
+      if (connection.type === 'sqlite') {
+        await updateSqliteRow(connection.path, tableName, setValues, whereValues);
+      } else {
+        await updateMariaRow(connection, tableName, setValues, whereValues);
+      }
+      results.push({ ok: true });
+    } catch (error) {
+      results.push({ ok: false, error: error.message });
+    }
+  }
+  return results;
+});
+
+ipcMain.handle('database:insert-rows', async (_event, { connection, tableName, rows }) => {
+  const results = [];
+  for (const row of rows) {
+    try {
+      if (connection.type === 'sqlite') {
+        await insertSqliteRow(connection.path, tableName, row);
+      } else {
+        await insertMariaRow(connection, tableName, row);
+      }
+      results.push({ ok: true });
+    } catch (error) {
+      results.push({ ok: false, error: error.message });
+    }
+  }
+  return results;
 });
 
 app.whenReady().then(() => {

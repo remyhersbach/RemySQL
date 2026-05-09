@@ -140,12 +140,26 @@
               <div class="table-scroll">
                 <table id="dataTable"></table>
               </div>
+              <div class="table-actions" id="tableActions" hidden>
+                <button id="addRowButton" class="ghost-button" disabled>+ Rij toevoegen</button>
+                <div id="pendingActions" class="pending-actions" hidden>
+                  <button id="saveRowsButton" class="primary-button">Opslaan</button>
+                  <button id="discardRowsButton" class="remove-button">Annuleren</button>
+                </div>
+              </div>
             </div>
 
-            <aside class="relations-panel">
+            <aside class="relations-panel collapsed" id="relationsPanel">
               <header>
-                <p class="eyebrow">Foreign keys</p>
-                <h3>Relaties</h3>
+                <div class="relations-panel-title">
+                  <p class="eyebrow">Foreign keys</p>
+                  <h3>Relaties</h3>
+                </div>
+                <button class="icon-button relations-toggle" id="relationsToggle" title="Relaties panel wisselen" aria-label="Relaties panel wisselen">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                </button>
               </header>
               <div id="relationsList" class="relations-list"></div>
             </aside>

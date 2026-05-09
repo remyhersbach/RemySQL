@@ -7,6 +7,8 @@ const state = {
   tablePayloadByTab: new Map(),
   selectedRowIndexByTab: new Map(),
   relationLookupByTab: new Map(),
+  pendingRowsByTab: new Map(),
+  editsByTab: new Map(),
   mode: 'data',
   filterTimer: null
 };
@@ -41,6 +43,13 @@ const elements = {
   tableMeta: document.querySelector('#tableMeta'),
   dataTable: document.querySelector('#dataTable'),
   relationsList: document.querySelector('#relationsList'),
+  relationsPanel: document.querySelector('#relationsPanel'),
+  relationsToggle: document.querySelector('#relationsToggle'),
+  tableActions: document.querySelector('#tableActions'),
+  addRowButton: document.querySelector('#addRowButton'),
+  pendingActions: document.querySelector('#pendingActions'),
+  saveRowsButton: document.querySelector('#saveRowsButton'),
+  discardRowsButton: document.querySelector('#discardRowsButton'),
   toast: document.querySelector('#toast')
 };
 
@@ -223,6 +232,8 @@ async function removeConnection(connectionId) {
     if (!state.tabs.some((tab) => tab.id === tabId)) {
       state.selectedRowIndexByTab.delete(tabId);
       state.relationLookupByTab.delete(tabId);
+      state.pendingRowsByTab.delete(tabId);
+      state.editsByTab.delete(tabId);
     }
   }
   if (state.activeConnectionId === connectionId) {
@@ -274,6 +285,8 @@ async function loadActiveTable() {
     });
     state.tablePayloadByTab.set(tab.id, payload);
     state.relationLookupByTab.delete(tab.id);
+    state.pendingRowsByTab.delete(tab.id);
+    state.editsByTab.delete(tab.id);
     if ((state.selectedRowIndexByTab.get(tab.id) ?? -1) >= payload.rows.length) {
       state.selectedRowIndexByTab.delete(tab.id);
     }
@@ -289,6 +302,8 @@ function closeTab(tabId) {
   state.tablePayloadByTab.delete(tabId);
   state.selectedRowIndexByTab.delete(tabId);
   state.relationLookupByTab.delete(tabId);
+  state.pendingRowsByTab.delete(tabId);
+  state.editsByTab.delete(tabId);
 
   if (state.activeTabId === tabId) {
     state.activeTabId = state.tabs[Math.max(0, index - 1)]?.id || state.tabs[0]?.id || null;
@@ -371,28 +386,101 @@ function renderTabs() {
     .join('');
 }
 
+function capturePendingInputValues() {
+  const tab = getActiveTab();
+  if (!tab) return;
+  const pendingRows = state.pendingRowsByTab.get(tab.id);
+  if (!pendingRows?.length) return;
+  for (const pendingRow of pendingRows) {
+    const rowEl = elements.dataTable.querySelector(`tr[data-pending-id="${pendingRow.id}"]`);
+    if (!rowEl) continue;
+    for (const input of rowEl.querySelectorAll('input[data-col]')) {
+      pendingRow.values[input.dataset.col] = input.value;
+    }
+  }
+}
+
+function appendPendingRows(tab, columns) {
+  if (!tab) return;
+  const pendingRows = state.pendingRowsByTab.get(tab.id) || [];
+  if (!pendingRows.length) return;
+  const tbody = elements.dataTable.querySelector('tbody');
+  if (!tbody) return;
+  if (tbody.querySelector('.pending-row')) return;
+
+  for (const pendingRow of pendingRows) {
+    const tr = document.createElement('tr');
+    tr.className = 'pending-row';
+    tr.dataset.pendingId = pendingRow.id;
+
+    for (const column of columns) {
+      const td = document.createElement('td');
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.dataset.col = column.name;
+      input.value = pendingRow.values[column.name] ?? '';
+      input.placeholder = column.name;
+      td.appendChild(input);
+      tr.appendChild(td);
+    }
+
+    const actionsTd = document.createElement('td');
+    actionsTd.className = 'pending-row-actions';
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'remove-button';
+    removeBtn.dataset.removePendingId = pendingRow.id;
+    removeBtn.title = 'Rij verwijderen';
+    removeBtn.textContent = '×';
+    actionsTd.appendChild(removeBtn);
+    tr.appendChild(actionsTd);
+    tbody.appendChild(tr);
+
+    if (pendingRow.error) {
+      const errorTr = document.createElement('tr');
+      errorTr.className = 'pending-row-error';
+      const errorTd = document.createElement('td');
+      errorTd.colSpan = columns.length + 1;
+      errorTd.innerHTML = `<span class="insert-error">⚠ ${escapeHtml(pendingRow.error)}</span>`;
+      errorTr.appendChild(errorTd);
+      tbody.appendChild(errorTr);
+    }
+  }
+}
+
 function renderDataTable(payload) {
   const tab = getActiveTab();
   const columns = payload.columns || [];
   const rows = payload.rows || [];
   const selectedRowIndex = state.selectedRowIndexByTab.get(tab?.id);
+  const edits = state.editsByTab.get(tab?.id) || new Map();
+
   const renderCell = (row, column, rowIndex) => {
+    const editKey = `${rowIndex}:${column.name}`;
+    const edit = edits.get(editKey);
+    const rawValue = row[column.name];
+
+    if (edit !== undefined) {
+      const cellClass = edit.error ? 'edited-cell-error' : 'edited-cell';
+      const content = edit.value === '' ? '<span class="muted-note">NULL</span>' : escapeHtml(edit.value);
+      const titleText = edit.error ? edit.error : edit.value;
+      return `<td class="${cellClass}" title="${escapeHtml(titleText)}">${content}</td>`;
+    }
+
     const relationMatch = getOutgoingRelationByColumn(payload, column.name);
-    const value = row[column.name];
 
     if (!relationMatch) {
-      return `<td title="${escapeHtml(formatPlainValue(value))}">${formatValue(value)}</td>`;
+      return `<td title="${escapeHtml(formatPlainValue(rawValue))}">${formatValue(rawValue)}</td>`;
     }
 
     return `
-      <td class="relation-cell" title="Open ${escapeHtml(relationMatch.relation.toTable)} voor ${escapeHtml(formatPlainValue(value))}">
+      <td class="relation-cell" title="Open ${escapeHtml(relationMatch.relation.toTable)} voor ${escapeHtml(formatPlainValue(rawValue))}">
         <button
           class="relation-value-button"
           data-row-index="${rowIndex}"
           data-relation-kind="outgoing"
           data-relation-index="${relationMatch.index}"
         >
-          ${formatValue(value)}
+          ${formatValue(rawValue)}
         </button>
       </td>
     `;
@@ -418,6 +506,7 @@ function renderDataTable(payload) {
       }
     </tbody>
   `;
+  appendPendingRows(tab, columns);
 }
 
 function renderRelationRows(rows) {
@@ -533,13 +622,22 @@ function renderRelations(payload) {
 }
 
 function renderTableView() {
+  capturePendingInputValues();
+
   const tab = getActiveTab();
   const payload = state.tablePayloadByTab.get(tab?.id);
   const activeConnection = state.connections.find((connection) => connection.id === tab?.connectionId);
+  const pendingRows = state.pendingRowsByTab.get(tab?.id) || [];
+  const edits = state.editsByTab.get(tab?.id);
+  const hasPending = pendingRows.length > 0 || (edits && edits.size > 0);
+  const isDataMode = state.mode === 'data';
 
   elements.emptyState.hidden = Boolean(tab);
   elements.tableView.hidden = !tab;
   elements.refreshButton.disabled = !activeConnection;
+  elements.tableActions.hidden = !tab || !payload;
+  elements.addRowButton.disabled = !isDataMode;
+  elements.pendingActions.hidden = !hasPending || !isDataMode;
 
   if (!tab) {
     elements.workspaceTitle.textContent = activeConnection ? 'Kies een tabel' : 'Open of maak een connectie';
@@ -551,9 +649,9 @@ function renderTableView() {
 
   elements.workspaceTitle.textContent = tab.tableName;
   elements.activeConnectionLabel.textContent = tab.connectionName;
-  elements.dataModeButton.classList.toggle('active', state.mode === 'data');
+  elements.dataModeButton.classList.toggle('active', isDataMode);
   elements.structureModeButton.classList.toggle('active', state.mode === 'structure');
-  elements.filterInput.disabled = state.mode !== 'data';
+  elements.filterInput.disabled = !isDataMode;
 
   if (!payload) {
     elements.tableMeta.textContent = 'Laden...';
@@ -585,6 +683,8 @@ async function loadRelationLookup(kind, index) {
     showToast('Selecteer eerst een rij in de tabel.');
     return;
   }
+
+  elements.relationsPanel.classList.remove('collapsed');
 
   const relation = kind === 'outgoing'
     ? payload.relations?.outgoing?.[index]
@@ -633,6 +733,87 @@ async function loadRelationLookup(kind, index) {
   }
 
   renderRelations(payload);
+}
+
+async function saveAll() {
+  const tab = getActiveTab();
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  const connection = state.connections.find((item) => item.id === tab?.connectionId);
+  if (!tab || !payload || !connection) return;
+
+  capturePendingInputValues();
+
+  // Process edits (UPDATEs)
+  const edits = state.editsByTab.get(tab.id);
+  if (edits && edits.size > 0) {
+    const editsByRow = new Map();
+    for (const [key, edit] of edits) {
+      const colonIdx = key.indexOf(':');
+      const rowIndex = Number(key.slice(0, colonIdx));
+      const colName = key.slice(colonIdx + 1);
+      if (!editsByRow.has(rowIndex)) editsByRow.set(rowIndex, {});
+      editsByRow.get(rowIndex)[colName] = edit.value === '' ? null : edit.value;
+    }
+
+    const pkColumns = payload.columns.filter((col) => Number(col.pk));
+    const updateOps = [];
+    for (const [rowIndex, setValues] of editsByRow) {
+      const originalRow = payload.rows[rowIndex];
+      const whereValues = pkColumns.length > 0
+        ? Object.fromEntries(pkColumns.map((col) => [col.name, originalRow[col.name]]))
+        : { ...originalRow };
+      updateOps.push({ rowIndex, setValues, whereValues });
+    }
+
+    try {
+      const results = await window.sqlBase.updateRows({
+        connection,
+        tableName: tab.tableName,
+        updates: updateOps.map(({ setValues, whereValues }) => ({ setValues, whereValues }))
+      });
+      const newEdits = new Map(edits);
+      for (let i = 0; i < updateOps.length; i++) {
+        const { rowIndex, setValues } = updateOps[i];
+        if (results[i].ok) {
+          for (const colName of Object.keys(setValues)) newEdits.delete(`${rowIndex}:${colName}`);
+        } else {
+          for (const colName of Object.keys(setValues)) {
+            const k = `${rowIndex}:${colName}`;
+            if (newEdits.has(k)) newEdits.set(k, { ...newEdits.get(k), error: results[i].error });
+          }
+        }
+      }
+      state.editsByTab.set(tab.id, newEdits);
+    } catch (error) {
+      showToast(error.message);
+    }
+  }
+
+  // Process pending rows (INSERTs)
+  const pendingRows = state.pendingRowsByTab.get(tab.id) || [];
+  if (pendingRows.length > 0) {
+    try {
+      const results = await window.sqlBase.insertRows({
+        connection,
+        tableName: tab.tableName,
+        rows: pendingRows.map((r) => r.values)
+      });
+      const failedRows = pendingRows
+        .map((row, i) => (results[i].ok ? null : { ...row, error: results[i].error }))
+        .filter(Boolean);
+      state.pendingRowsByTab.set(tab.id, failedRows);
+    } catch (error) {
+      showToast(error.message);
+    }
+  }
+
+  const remainingEdits = state.editsByTab.get(tab.id);
+  const remainingPending = state.pendingRowsByTab.get(tab.id) || [];
+  if ((!remainingEdits || remainingEdits.size === 0) && remainingPending.length === 0) {
+    await loadActiveTable();
+  } else {
+    renderTableView();
+  }
 }
 
 function render() {
@@ -745,17 +926,33 @@ elements.filterInput.addEventListener('input', () => {
 elements.limitInput.addEventListener('change', loadActiveTable);
 
 elements.dataTable.addEventListener('click', async (event) => {
-  const relationValueButton = event.target.closest('[data-relation-kind]');
-  const row = event.target.closest('[data-row-index]');
   const tab = getActiveTab();
+  if (!tab) return;
 
-  if (!row || !tab) {
+  const removePendingButton = event.target.closest('[data-remove-pending-id]');
+  if (removePendingButton) {
+    const pendingId = removePendingButton.dataset.removePendingId;
+    const pendingRows = state.pendingRowsByTab.get(tab.id) || [];
+    state.pendingRowsByTab.set(tab.id, pendingRows.filter((r) => r.id !== pendingId));
+    renderTableView();
     return;
   }
 
+  const relationValueButton = event.target.closest('[data-relation-kind]');
+  const row = event.target.closest('[data-row-index]');
+
+  if (!row) return;
+
+  // Update selected row class directly — do NOT call renderTableView() here
+  // because that would rebuild the DOM and break dblclick-to-edit detection.
+  elements.dataTable.querySelector('.selected-row')?.classList.remove('selected-row');
+  row.classList.add('selected-row');
+
   state.selectedRowIndexByTab.set(tab.id, Number(row.dataset.rowIndex));
   state.relationLookupByTab.delete(tab.id);
-  renderTableView();
+
+  const payload = state.tablePayloadByTab.get(tab.id);
+  if (payload) renderRelations(payload);
 
   if (relationValueButton) {
     await loadRelationLookup(
@@ -763,6 +960,113 @@ elements.dataTable.addEventListener('click', async (event) => {
       Number(relationValueButton.dataset.relationIndex)
     );
   }
+});
+
+elements.addRowButton.addEventListener('click', () => {
+  const tab = getActiveTab();
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  if (!tab || !payload) return;
+
+  capturePendingInputValues();
+
+  const columns = payload.columns || [];
+  const values = Object.fromEntries(columns.map((col) => [col.name, '']));
+  const pendingRows = state.pendingRowsByTab.get(tab.id) || [];
+  pendingRows.push({ id: crypto.randomUUID(), values, error: null });
+  state.pendingRowsByTab.set(tab.id, pendingRows);
+  renderTableView();
+
+  const allPendingRows = elements.dataTable.querySelectorAll('.pending-row');
+  allPendingRows[allPendingRows.length - 1]?.querySelector('input')?.focus();
+});
+
+elements.saveRowsButton.addEventListener('click', saveAll);
+
+elements.discardRowsButton.addEventListener('click', () => {
+  const tab = getActiveTab();
+  if (!tab) return;
+  state.pendingRowsByTab.delete(tab.id);
+  state.editsByTab.delete(tab.id);
+  renderTableView();
+});
+
+elements.dataTable.addEventListener('dblclick', (event) => {
+  const td = event.target.closest('td');
+  const row = td?.closest('tr[data-row-index]');
+  if (!td || !row || td.classList.contains('relation-cell')) return;
+  if (td.querySelector('input[data-edit-input]')) return;
+
+  const tab = getActiveTab();
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  if (!tab || !payload || state.mode !== 'data') return;
+
+  const rowIndex = Number(row.dataset.rowIndex);
+  const colIndex = [...row.children].indexOf(td);
+  const column = payload.columns[colIndex];
+  if (!column) return;
+
+  const editKey = `${rowIndex}:${column.name}`;
+  const existingEdit = state.editsByTab.get(tab.id)?.get(editKey);
+  const rawValue = payload.rows[rowIndex]?.[column.name];
+  const inputValue = existingEdit !== undefined
+    ? existingEdit.value
+    : (rawValue === null || rawValue === undefined ? '' : String(rawValue));
+
+  let done = false;
+
+  const originalHtml = td.innerHTML;
+  const originalClassName = td.className;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.dataset.editInput = '1';
+  input.value = inputValue;
+
+  td.innerHTML = '';
+  td.classList.add('editing');
+  td.classList.remove('edited-cell', 'edited-cell-error');
+  td.appendChild(input);
+  input.focus();
+  input.select();
+
+  const commit = () => {
+    if (done) return;
+    done = true;
+    const val = input.value;
+
+    if (val === inputValue) {
+      td.className = originalClassName;
+      td.innerHTML = originalHtml;
+      return;
+    }
+
+    const edits = state.editsByTab.get(tab.id) || new Map();
+    edits.set(editKey, { value: val, error: null });
+    state.editsByTab.set(tab.id, edits);
+    td.classList.remove('editing');
+    td.classList.add('edited-cell');
+    td.title = val;
+    td.innerHTML = val === '' ? '<span class="muted-note">NULL</span>' : escapeHtml(val);
+    elements.pendingActions.hidden = false;
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      if (done) return;
+      done = true;
+      renderTableView();
+    }
+  });
+
+  input.addEventListener('blur', commit);
+});
+
+elements.relationsToggle.addEventListener('click', () => {
+  elements.relationsPanel.classList.toggle('collapsed');
 });
 
 elements.refreshButton.addEventListener('click', async () => {
