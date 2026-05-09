@@ -9,6 +9,8 @@ const state = {
   relationLookupByTab: new Map(),
   pendingRowsByTab: new Map(),
   editsByTab: new Map(),
+  sidebarView: 'connections',
+  editingConnectionId: null,
   mode: 'data',
   filterTimer: null
 };
@@ -29,6 +31,8 @@ const elements = {
   connectionPathInput: document.querySelector('#connectionPathInput'),
   saveConnectionButton: document.querySelector('#saveConnectionButton'),
   cancelConnectionButton: document.querySelector('#cancelConnectionButton'),
+  connectionFormTitle: document.querySelector('#connectionFormTitle'),
+  sidebarNav: document.querySelector('#sidebarNav'),
   connectionsList: document.querySelector('#connectionsList'),
   activeConnectionLabel: document.querySelector('#activeConnectionLabel'),
   workspaceTitle: document.querySelector('#workspaceTitle'),
@@ -142,6 +146,8 @@ function setConnectionFormType(type) {
 }
 
 function openConnectionForm(type = 'mariadb', preset = {}) {
+  state.editingConnectionId = preset.id || null;
+  elements.connectionFormTitle.textContent = state.editingConnectionId ? 'Connectie bewerken' : 'Nieuwe connectie';
   elements.connectionForm.hidden = false;
   setConnectionFormType(type);
   elements.connectionNameInput.value = preset.name || '';
@@ -155,6 +161,7 @@ function openConnectionForm(type = 'mariadb', preset = {}) {
 }
 
 function resetConnectionForm() {
+  state.editingConnectionId = null;
   elements.connectionNameInput.value = '';
   elements.connectionPathInput.value = '';
   elements.mariaHostInput.value = '127.0.0.1';
@@ -165,8 +172,10 @@ function resetConnectionForm() {
 }
 
 function getConnectionFromForm() {
+  const id = state.editingConnectionId || undefined;
   if (elements.connectionTypeSelect.value === 'sqlite') {
     return {
+      ...(id ? { id } : {}),
       type: 'sqlite',
       name: elements.connectionNameInput.value,
       path: elements.connectionPathInput.value
@@ -174,6 +183,7 @@ function getConnectionFromForm() {
   }
 
   return {
+    ...(id ? { id } : {}),
     type: 'mariadb',
     name: elements.connectionNameInput.value || elements.mariaDatabaseInput.value,
     host: elements.mariaHostInput.value || '127.0.0.1',
@@ -237,6 +247,7 @@ async function removeConnection(connectionId) {
     }
   }
   if (state.activeConnectionId === connectionId) {
+    state.sidebarView = 'connections';
     state.activeConnectionId = state.connections[0]?.id || null;
     if (state.activeConnectionId) {
       await loadSchemaForActiveConnection();
@@ -314,61 +325,70 @@ function closeTab(tabId) {
 }
 
 function renderConnections() {
-  const scrollPositions = new Map();
-  for (const item of elements.connectionsList.querySelectorAll('.connection-item')) {
-    const idEl = item.querySelector('[data-connection-id]');
-    const list = item.querySelector('.tables-list');
-    if (idEl && list && list.scrollTop > 0) {
-      scrollPositions.set(idEl.dataset.connectionId, list.scrollTop);
-    }
-  }
+  const connection = getActiveConnection();
 
-  elements.connectionsList.innerHTML = '';
-
-  if (!state.connections.length) {
-    elements.connectionsList.innerHTML = '<p class="muted-note">Nog geen connecties. Maak er linksboven een aan.</p>';
-    return;
-  }
-
-  for (const connection of state.connections) {
+  if (state.sidebarView === 'tables' && connection) {
     const schema = state.schemaByConnection.get(connection.id);
-    const item = document.createElement('article');
-    item.className = 'connection-item';
-    item.innerHTML = `
-      <button class="connection-button ${connection.id === state.activeConnectionId ? 'active' : ''}" data-connection-id="${escapeHtml(connection.id)}">
-        <span>
+    const activeTab = getActiveTab();
+    const chevronLeft = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="13" height="13" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>`;
+
+    const pencilIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+    elements.sidebarNav.innerHTML = `
+      <button class="sidebar-back-button" data-back-to-connections>${chevronLeft} Connecties</button>
+      <div class="active-connection-info">
+        <div class="active-connection-text">
           <span class="connection-name">${escapeHtml(connection.name)}</span>
           <span class="connection-path">${escapeHtml(getConnectionSummary(connection))}</span>
-        </span>
-      </button>
-      <div class="connection-actions">
-        <button class="remove-button" data-remove-connection-id="${escapeHtml(connection.id)}">Verwijder</button>
-      </div>
-      <div class="tables-list">
-        ${(schema?.tables || [])
-          .map(
-            (table) => `
-              <button class="table-button ${getActiveTab()?.connectionId === connection.id && getActiveTab()?.tableName === table.name ? 'active' : ''}" data-table-name="${escapeHtml(table.name)}" data-table-connection-id="${escapeHtml(connection.id)}">
-                <span>
-                  <span class="table-name">${escapeHtml(table.name)}</span>
-                  <span class="table-kind">${escapeHtml(table.type)}</span>
-                </span>
-              </button>
-            `
-          )
-          .join('')}
+        </div>
+        <button class="edit-connection-button icon-button" data-edit-connection-id="${escapeHtml(connection.id)}" title="Bewerk connectie" aria-label="Bewerk connectie">${pencilIcon}</button>
       </div>
     `;
 
-    elements.connectionsList.appendChild(item);
-  }
+    const tables = schema?.tables || [];
+    elements.connectionsList.innerHTML = tables.length
+      ? tables.map((table) => `
+          <button class="table-button ${activeTab?.connectionId === connection.id && activeTab?.tableName === table.name ? 'active' : ''}"
+                  data-table-name="${escapeHtml(table.name)}"
+                  data-table-connection-id="${escapeHtml(connection.id)}">
+            <span>
+              <span class="table-name">${escapeHtml(table.name)}</span>
+              <span class="table-kind">${escapeHtml(table.type)}</span>
+            </span>
+          </button>
+        `).join('')
+      : '<p class="muted-note">Geen tabellen gevonden.</p>';
 
-  for (const item of elements.connectionsList.querySelectorAll('.connection-item')) {
-    const idEl = item.querySelector('[data-connection-id]');
-    const list = item.querySelector('.tables-list');
-    const saved = idEl ? scrollPositions.get(idEl.dataset.connectionId) : undefined;
-    if (list && saved) {
-      list.scrollTop = saved;
+    elements.connectionsList.dataset.view = 'tables';
+  } else {
+    elements.sidebarNav.innerHTML = '<div class="section-title">Connecties</div>';
+    elements.connectionsList.innerHTML = '';
+    elements.connectionsList.dataset.view = 'connections';
+
+    if (!state.connections.length) {
+      elements.connectionsList.innerHTML = '<p class="muted-note">Nog geen connecties. Maak er linksboven een aan.</p>';
+      return;
+    }
+
+    for (const conn of state.connections) {
+      const item = document.createElement('article');
+      item.className = 'connection-item';
+      item.innerHTML = `
+        <button class="connection-button" data-connection-id="${escapeHtml(conn.id)}">
+          <span>
+            <span class="connection-name">${escapeHtml(conn.name)}</span>
+            <span class="connection-path">${escapeHtml(getConnectionSummary(conn))}</span>
+          </span>
+        </button>
+        <div class="connection-actions">
+          <button class="icon-button" data-edit-connection-id="${escapeHtml(conn.id)}" title="Bewerk connectie" aria-label="Bewerk connectie">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button class="icon-button connection-delete-button" data-remove-connection-id="${escapeHtml(conn.id)}" title="Verwijder connectie" aria-label="Verwijder connectie">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          </button>
+        </div>
+      `;
+      elements.connectionsList.appendChild(item);
     }
   }
 }
@@ -863,13 +883,36 @@ elements.connectionTypeSelect.addEventListener('change', () => {
   setConnectionFormType(elements.connectionTypeSelect.value);
 });
 
+elements.sidebarNav.addEventListener('click', (event) => {
+  if (event.target.closest('[data-back-to-connections]')) {
+    state.sidebarView = 'connections';
+    render();
+    return;
+  }
+
+  const editButton = event.target.closest('[data-edit-connection-id]');
+  if (editButton) {
+    const conn = state.connections.find((c) => c.id === editButton.dataset.editConnectionId);
+    if (conn) openConnectionForm(conn.type, conn);
+  }
+});
+
 elements.connectionsList.addEventListener('click', async (event) => {
   const connectionButton = event.target.closest('[data-connection-id]');
   const tableButton = event.target.closest('[data-table-name]');
   const removeButton = event.target.closest('[data-remove-connection-id]');
+  const editButton = event.target.closest('[data-edit-connection-id]');
 
   if (removeButton) {
+    const conn = state.connections.find((c) => c.id === removeButton.dataset.removeConnectionId);
+    if (conn && !confirm(`Connectie "${conn.name}" verwijderen?`)) return;
     await removeConnection(removeButton.dataset.removeConnectionId);
+    return;
+  }
+
+  if (editButton) {
+    const conn = state.connections.find((c) => c.id === editButton.dataset.editConnectionId);
+    if (conn) openConnectionForm(conn.type, conn);
     return;
   }
 
@@ -884,6 +927,7 @@ elements.connectionsList.addEventListener('click', async (event) => {
 
   if (connectionButton) {
     state.activeConnectionId = connectionButton.dataset.connectionId;
+    state.sidebarView = 'tables';
     if (!state.schemaByConnection.has(state.activeConnectionId)) {
       await loadSchemaForActiveConnection();
     }

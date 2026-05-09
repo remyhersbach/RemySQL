@@ -397,15 +397,77 @@ select:focus {
   flex-shrink: 0;
 }
 
-.connection-item:has(.connection-button.active) {
-  flex: 1 1 0;
-  min-height: 0;
+/* ── Sidebar navigation ──────────────────────────────────────────────────── */
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
-.connection-item:has(.connection-button.active) .tables-list {
-  flex: 1 1 0;
-  min-height: 0;
-  overflow-y: scroll;
+.sidebar-back-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sidebar-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  text-align: left;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.sidebar-back-button:hover {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text);
+}
+
+.active-connection-info {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px 8px;
+  border-bottom: 1px solid var(--sidebar-border);
+}
+
+.active-connection-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.active-connection-info .connection-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--sidebar-text);
+}
+
+.active-connection-info .connection-path {
+  font-size: 10px;
+  color: var(--sidebar-text-muted);
+}
+
+.edit-connection-button {
+  flex-shrink: 0;
+  color: var(--sidebar-text-muted);
+}
+
+.edit-connection-button:hover {
+  color: var(--sidebar-text);
+}
+
+/* Tables view — list scrolls directly */
+.connections-list[data-view="tables"] {
+  overflow-y: auto;
+  gap: 1px;
 }
 
 /* ── Scrollbars ──────────────────────────────────────────────────────────── */
@@ -491,10 +553,28 @@ select:focus {
   white-space: nowrap;
 }
 
+.connection-form-title {
+  margin-bottom: 2px;
+}
+
 .connection-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 4px;
   padding: 0 7px 7px;
+}
+
+.connection-actions .icon-button {
+  color: var(--sidebar-text-muted);
+}
+
+.connection-actions .icon-button:hover {
+  color: var(--sidebar-text);
+}
+
+.connection-actions .connection-delete-button:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .remove-button {
