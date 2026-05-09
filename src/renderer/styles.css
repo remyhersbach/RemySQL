@@ -729,6 +729,115 @@ select:focus {
   box-shadow: var(--shadow-sm);
 }
 
+.filter-area {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.filter-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.filter-input-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.filter-text-mode {
+  flex: 1;
+  min-width: 0;
+}
+
+.filter-text-mode input {
+  width: 100%;
+}
+
+.filter-column-mode {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+
+.filter-column-mode select { flex-shrink: 0; width: auto; }
+.filter-column-mode input  { flex: 1; min-width: 0; width: auto; }
+
+.filter-date-btn {
+  flex-shrink: 0;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  white-space: nowrap;
+  text-align: left;
+  transition: border-color 120ms, box-shadow 120ms;
+}
+
+.filter-date-btn:hover {
+  border-color: var(--accent);
+}
+
+.filter-date-btn:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.filter-between-sep {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 0 2px;
+}
+
+.filter-mode-toggle {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  transition: background 120ms, color 120ms, border-color 120ms;
+}
+
+.filter-mode-toggle:hover {
+  background: var(--interactive-bg);
+  color: var(--text);
+}
+
+.filter-mode-toggle.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filter-select {
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  height: 30px;
+}
+
 .content-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 310px;
@@ -1055,6 +1164,52 @@ td.editing input {
 }
 
 /* ── Toast ───────────────────────────────────────────────────────────────── */
+
+/* ── Date picker ─────────────────────────────────────────────────────────── */
+
+.date-picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
+}
+
+.date-picker-popover {
+  position: fixed;
+  z-index: 200;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 260px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.date-picker-input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface-alt);
+  color-scheme: light dark;
+}
+
+.date-picker-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.date-picker-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
 
 .toast {
   position: fixed;

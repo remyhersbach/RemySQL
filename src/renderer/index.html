@@ -125,10 +125,32 @@
               <button id="dataModeButton" class="active" role="tab">Data</button>
               <button id="structureModeButton" role="tab">Structuur</button>
             </div>
-            <label class="filter-input">
-              Filter
-              <input id="filterInput" type="search" placeholder="Zoek in alle kolommen" />
-            </label>
+            <div class="filter-area" id="filterArea">
+              <span class="filter-label">Filter</span>
+              <div class="filter-input-row">
+                <div class="filter-text-mode" id="filterTextMode">
+                  <input id="filterInput" type="search" placeholder="Zoek in alle kolommen" />
+                </div>
+                <div class="filter-column-mode" id="filterColumnMode" hidden>
+                  <select id="filterColumnSelect">
+                    <option value="">— kolom —</option>
+                  </select>
+                  <select id="filterOperatorSelect">
+                    <option value="=">is gelijk aan</option>
+                    <option value="!=">is niet gelijk aan</option>
+                    <option value="LIKE">bevat</option>
+                    <option value="BETWEEN">tussen</option>
+                  </select>
+                  <input id="filterValueInput" type="text" placeholder="Waarde..." />
+                  <button id="filterValueDateBtn" class="filter-date-btn" hidden>Kies datum…</button>
+                  <span id="filterBetweenSep" class="filter-between-sep" hidden>en</span>
+                  <button id="filterValueToDateBtn" class="filter-date-btn" hidden>Kies datum…</button>
+                </div>
+                <button id="filterModeToggle" class="filter-mode-toggle" title="Zoek op specifieke kolom" aria-label="Zoek op specifieke kolom">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13" aria-hidden="true"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                </button>
+              </div>
+            </div>
             <label class="limit-input">
               Limiet
               <input id="limitInput" type="number" min="1" max="500" value="100" />
@@ -167,6 +189,15 @@
           </div>
         </section>
       </main>
+    </div>
+
+    <div id="datePickerBackdrop" class="date-picker-backdrop" hidden></div>
+    <div id="datePicker" class="date-picker-popover" hidden>
+      <div class="date-picker-actions">
+        <button id="datePickerCancel" class="ghost-button">Annuleer</button>
+        <button id="datePickerConfirm" class="primary-button">OK</button>
+      </div>
+      <input id="datePickerInput" class="date-picker-input" />
     </div>
 
     <div id="toast" class="toast" hidden></div>

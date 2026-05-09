@@ -12,7 +12,10 @@ const state = {
   sidebarView: 'connections',
   editingConnectionId: null,
   mode: 'data',
-  filterTimer: null
+  filterTimer: null,
+  filterMode: 'text',
+  filterValue: '',
+  filterValueTo: ''
 };
 
 const elements = {
@@ -43,6 +46,16 @@ const elements = {
   dataModeButton: document.querySelector('#dataModeButton'),
   structureModeButton: document.querySelector('#structureModeButton'),
   filterInput: document.querySelector('#filterInput'),
+  filterArea: document.querySelector('#filterArea'),
+  filterTextMode: document.querySelector('#filterTextMode'),
+  filterColumnMode: document.querySelector('#filterColumnMode'),
+  filterModeToggle: document.querySelector('#filterModeToggle'),
+  filterColumnSelect: document.querySelector('#filterColumnSelect'),
+  filterOperatorSelect: document.querySelector('#filterOperatorSelect'),
+  filterValueInput: document.querySelector('#filterValueInput'),
+  filterValueDateBtn: document.querySelector('#filterValueDateBtn'),
+  filterBetweenSep: document.querySelector('#filterBetweenSep'),
+  filterValueToDateBtn: document.querySelector('#filterValueToDateBtn'),
   limitInput: document.querySelector('#limitInput'),
   tableMeta: document.querySelector('#tableMeta'),
   dataTable: document.querySelector('#dataTable'),
@@ -54,6 +67,11 @@ const elements = {
   pendingActions: document.querySelector('#pendingActions'),
   saveRowsButton: document.querySelector('#saveRowsButton'),
   discardRowsButton: document.querySelector('#discardRowsButton'),
+  datePickerBackdrop: document.querySelector('#datePickerBackdrop'),
+  datePicker: document.querySelector('#datePicker'),
+  datePickerInput: document.querySelector('#datePickerInput'),
+  datePickerConfirm: document.querySelector('#datePickerConfirm'),
+  datePickerCancel: document.querySelector('#datePickerCancel'),
   toast: document.querySelector('#toast')
 };
 
@@ -275,7 +293,16 @@ async function openTable(connection, tableName) {
   state.tabs.push(tab);
   state.activeTabId = tab.id;
   state.mode = 'data';
+  state.filterMode = 'text';
+  state.filterValue = '';
+  state.filterValueTo = '';
   elements.filterInput.value = '';
+  elements.filterColumnSelect.value = '';
+  elements.filterOperatorSelect.value = '=';
+  elements.filterValueInput.value = '';
+  elements.filterTextMode.hidden = false;
+  elements.filterColumnMode.hidden = true;
+  elements.filterModeToggle.classList.remove('active');
   render();
   await loadActiveTable();
 }
@@ -292,7 +319,20 @@ async function loadActiveTable() {
       connection,
       tableName: tab.tableName,
       filter: elements.filterInput.value,
-      limit: elements.limitInput.value
+      limit: elements.limitInput.value,
+      columnFilter: (() => {
+        const column = elements.filterColumnSelect.value;
+        const operator = elements.filterOperatorSelect.value;
+        if (!column) return null;
+        if (operator === 'BETWEEN') {
+          return state.filterValue.trim() && state.filterValueTo.trim()
+            ? { column, operator: 'BETWEEN', value: state.filterValue, valueTo: state.filterValueTo }
+            : null;
+        }
+        return state.filterValue.trim()
+          ? { column, operator, value: state.filterValue }
+          : null;
+      })()
     });
     state.tablePayloadByTab.set(tab.id, payload);
     state.relationLookupByTab.delete(tab.id);
@@ -323,6 +363,174 @@ function closeTab(tabId) {
   render();
   renderTableView();
 }
+
+function getDateInputType(columnType) {
+  if (!columnType) return null;
+  const t = columnType.toLowerCase().replace(/\(.*\)/, '').trim();
+  if (t === 'datetime' || t === 'timestamp') return 'datetime-local';
+  if (t === 'date') return 'date';
+  if (t === 'time') return 'time';
+  return null;
+}
+
+function dbValueToInputValue(value, inputType) {
+  if (value === null || value === undefined || value === '') return '';
+  const str = String(value);
+  if (inputType === 'datetime-local') return str.replace(' ', 'T').substring(0, 19);
+  if (inputType === 'date') return str.substring(0, 10);
+  return str;
+}
+
+function inputValueToDbValue(value, inputType) {
+  if (!value) return '';
+  if (inputType === 'datetime-local') {
+    const withSeconds = value.length === 16 ? `${value}:00` : value;
+    return withSeconds.replace('T', ' ');
+  }
+  if (inputType === 'time' && value.length === 5) return `${value}:00`;
+  return value;
+}
+
+const datePickerState = { onCommit: null, onCancel: null };
+
+function openDatePicker(td, tab, editKey, rawInputValue, inputType, originalHtml, originalClassName) {
+  let done = false;
+
+  td.classList.add('editing');
+  td.classList.remove('edited-cell', 'edited-cell-error');
+
+  elements.datePickerInput.type = inputType;
+  if (inputType === 'datetime-local') elements.datePickerInput.step = '1';
+  elements.datePickerInput.value = dbValueToInputValue(rawInputValue, inputType);
+  elements.datePickerBackdrop.hidden = false;
+  elements.datePicker.hidden = false;
+
+  const rect = td.getBoundingClientRect();
+  const left = Math.min(rect.left, window.innerWidth - 268);
+  elements.datePicker.style.left = `${Math.max(8, left)}px`;
+  elements.datePicker.style.top = `${rect.bottom + 4}px`;
+
+  elements.datePickerInput.focus();
+  try { elements.datePickerInput.showPicker(); } catch {}
+
+  const close = () => {
+    elements.datePickerBackdrop.hidden = true;
+    elements.datePicker.hidden = true;
+    datePickerState.onCommit = null;
+    datePickerState.onCancel = null;
+  };
+
+  const commit = () => {
+    if (done) return;
+    done = true;
+    close();
+    td.classList.remove('editing');
+
+    const val = inputValueToDbValue(elements.datePickerInput.value, inputType);
+    const original = rawInputValue === null || rawInputValue === undefined ? '' : String(rawInputValue);
+
+    if (val === original) {
+      td.className = originalClassName;
+      td.innerHTML = originalHtml;
+      return;
+    }
+
+    const edits = state.editsByTab.get(tab.id) || new Map();
+    edits.set(editKey, { value: val, error: null });
+    state.editsByTab.set(tab.id, edits);
+    td.classList.add('edited-cell');
+    td.title = val;
+    td.innerHTML = val === '' ? '<span class="muted-note">NULL</span>' : escapeHtml(val);
+    elements.pendingActions.hidden = false;
+  };
+
+  const cancel = () => {
+    if (done) return;
+    done = true;
+    close();
+    td.className = originalClassName;
+    td.innerHTML = originalHtml;
+  };
+
+  datePickerState.onCommit = commit;
+  datePickerState.onCancel = cancel;
+}
+
+function openFilterDatePicker(inputType, currentValue, anchorEl, onConfirm) {
+  if (datePickerState.onCancel) datePickerState.onCancel();
+
+  let done = false;
+
+  elements.datePickerInput.type = inputType;
+  if (inputType === 'datetime-local') elements.datePickerInput.step = '1';
+  elements.datePickerInput.value = dbValueToInputValue(currentValue, inputType);
+  elements.datePickerBackdrop.hidden = false;
+  elements.datePicker.hidden = false;
+
+  const rect = anchorEl.getBoundingClientRect();
+  const left = Math.min(rect.left, window.innerWidth - 268);
+  elements.datePicker.style.left = `${Math.max(8, left)}px`;
+  elements.datePicker.style.top = `${rect.bottom + 4}px`;
+
+  elements.datePickerInput.focus();
+  try { elements.datePickerInput.showPicker(); } catch {}
+
+  const close = () => {
+    elements.datePickerBackdrop.hidden = true;
+    elements.datePicker.hidden = true;
+    datePickerState.onCommit = null;
+    datePickerState.onCancel = null;
+  };
+
+  const commit = () => {
+    if (done) return;
+    done = true;
+    close();
+    onConfirm(inputValueToDbValue(elements.datePickerInput.value, inputType));
+  };
+
+  const cancel = () => {
+    if (done) return;
+    done = true;
+    close();
+  };
+
+  datePickerState.onCommit = commit;
+  datePickerState.onCancel = cancel;
+}
+
+function getFilterColumnType() {
+  const tab = getActiveTab();
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  const col = payload?.columns?.find((c) => c.name === elements.filterColumnSelect.value);
+  return col ? getDateInputType(col.type) : null;
+}
+
+function updateFilterValueUI() {
+  const col = elements.filterColumnSelect.value;
+  const dateType = col ? getFilterColumnType() : null;
+  const isDate = Boolean(dateType);
+  const operator = elements.filterOperatorSelect.value;
+  const isBetween = operator === 'BETWEEN';
+
+  elements.filterValueInput.hidden = isDate;
+  elements.filterValueDateBtn.hidden = !isDate;
+  elements.filterBetweenSep.hidden = !isBetween;
+  elements.filterValueToDateBtn.hidden = !isBetween;
+
+  elements.filterValueDateBtn.textContent = state.filterValue || (isBetween ? 'Van…' : 'Kies datum…');
+  elements.filterValueToDateBtn.textContent = state.filterValueTo || 'Tot…';
+}
+
+elements.datePickerConfirm.addEventListener('click', () => datePickerState.onCommit?.());
+elements.datePickerCancel.addEventListener('click', () => datePickerState.onCancel?.());
+
+elements.datePickerInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); datePickerState.onCommit?.(); }
+  if (e.key === 'Escape') { e.preventDefault(); datePickerState.onCancel?.(); }
+});
+
+elements.datePickerBackdrop.addEventListener('click', () => datePickerState.onCancel?.());
 
 function renderConnections() {
   const connection = getActiveConnection();
@@ -658,6 +866,7 @@ function renderTableView() {
   elements.tableActions.hidden = !tab || !payload;
   elements.addRowButton.disabled = !isDataMode;
   elements.pendingActions.hidden = !hasPending || !isDataMode;
+  elements.filterArea.hidden = !isDataMode;
 
   if (!tab) {
     elements.workspaceTitle.textContent = activeConnection ? 'Kies een tabel' : 'Open of maak een connectie';
@@ -679,6 +888,14 @@ function renderTableView() {
     elements.relationsList.innerHTML = '';
     return;
   }
+
+  const cols = payload.columns || [];
+  const savedCol = elements.filterColumnSelect.value;
+  elements.filterColumnSelect.innerHTML =
+    '<option value="">— kolom —</option>' +
+    cols.map((col) => `<option value="${escapeHtml(col.name)}">${escapeHtml(col.name)}</option>`).join('');
+  elements.filterColumnSelect.value = savedCol;
+  updateFilterValueUI();
 
   if (state.mode === 'structure') {
     renderStructureTable(payload);
@@ -967,6 +1184,64 @@ elements.filterInput.addEventListener('input', () => {
   state.filterTimer = setTimeout(loadActiveTable, 220);
 });
 
+elements.filterModeToggle.addEventListener('click', () => {
+  const toColumn = state.filterMode === 'text';
+  state.filterMode = toColumn ? 'column' : 'text';
+  elements.filterTextMode.hidden = toColumn;
+  elements.filterColumnMode.hidden = !toColumn;
+  elements.filterModeToggle.classList.toggle('active', toColumn);
+  if (!toColumn) {
+    state.filterValue = '';
+    state.filterValueTo = '';
+    elements.filterColumnSelect.value = '';
+    elements.filterOperatorSelect.value = '=';
+    elements.filterValueInput.value = '';
+    loadActiveTable();
+  } else {
+    elements.filterColumnSelect.focus();
+  }
+});
+
+elements.filterColumnSelect.addEventListener('change', () => {
+  state.filterValue = '';
+  state.filterValueTo = '';
+  elements.filterValueInput.value = '';
+  updateFilterValueUI();
+  loadActiveTable();
+});
+
+elements.filterOperatorSelect.addEventListener('change', () => {
+  state.filterValueTo = '';
+  updateFilterValueUI();
+  if (state.filterValue.trim()) loadActiveTable();
+});
+
+elements.filterValueInput.addEventListener('input', () => {
+  state.filterValue = elements.filterValueInput.value;
+  clearTimeout(state.filterTimer);
+  if (elements.filterColumnSelect.value) state.filterTimer = setTimeout(loadActiveTable, 220);
+});
+
+elements.filterValueDateBtn.addEventListener('click', () => {
+  const dateType = getFilterColumnType();
+  if (!dateType) return;
+  openFilterDatePicker(dateType, state.filterValue, elements.filterValueDateBtn, (val) => {
+    state.filterValue = val;
+    updateFilterValueUI();
+    if (elements.filterOperatorSelect.value !== 'BETWEEN' || state.filterValueTo.trim()) loadActiveTable();
+  });
+});
+
+elements.filterValueToDateBtn.addEventListener('click', () => {
+  const dateType = getFilterColumnType();
+  if (!dateType) return;
+  openFilterDatePicker(dateType, state.filterValueTo, elements.filterValueToDateBtn, (val) => {
+    state.filterValueTo = val;
+    updateFilterValueUI();
+    if (state.filterValue.trim()) loadActiveTable();
+  });
+});
+
 elements.limitInput.addEventListener('change', loadActiveTable);
 
 elements.dataTable.addEventListener('click', async (event) => {
@@ -1056,10 +1331,16 @@ elements.dataTable.addEventListener('dblclick', (event) => {
     ? existingEdit.value
     : (rawValue === null || rawValue === undefined ? '' : String(rawValue));
 
-  let done = false;
-
   const originalHtml = td.innerHTML;
   const originalClassName = td.className;
+
+  const dateInputType = getDateInputType(column.type);
+  if (dateInputType) {
+    openDatePicker(td, tab, editKey, inputValue, dateInputType, originalHtml, originalClassName);
+    return;
+  }
+
+  let done = false;
 
   const input = document.createElement('input');
   input.type = 'text';

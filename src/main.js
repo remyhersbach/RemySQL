@@ -149,16 +149,33 @@ async function getSqliteIncomingForeignKeys(databasePath, tableName) {
   return incoming;
 }
 
-async function getSqliteData(databasePath, tableName, filter, limit) {
+async function getSqliteData(databasePath, tableName, filter, limit, columnFilter) {
   const safeLimit = clamp(limit, 1, 500);
   const columns = await getSqliteColumns(databasePath, tableName);
   const searchableColumns = columns.map((column) => column.name);
-  const where = String(filter || '').trim()
-    ? ` WHERE ${searchableColumns
-        .map((columnName) => `CAST(${quoteSqliteIdentifier(columnName)} AS TEXT) LIKE ${quoteLiteral(`%${filter.trim()}%`)}`)
-        .join(' OR ')}`
-    : '';
+  const clauses = [];
 
+  if (String(filter || '').trim()) {
+    clauses.push(`(${searchableColumns
+      .map((col) => `CAST(${quoteSqliteIdentifier(col)} AS TEXT) LIKE ${quoteLiteral(`%${filter.trim()}%`)}`)
+      .join(' OR ')})`);
+  }
+
+  if (columnFilter?.column && String(columnFilter.value ?? '').trim()) {
+    const col = quoteSqliteIdentifier(columnFilter.column);
+    const val = String(columnFilter.value).trim();
+    if (columnFilter.operator === 'BETWEEN' && String(columnFilter.valueTo ?? '').trim()) {
+      clauses.push(`${col} BETWEEN ${quoteLiteral(val)} AND ${quoteLiteral(String(columnFilter.valueTo).trim())}`);
+    } else if (columnFilter.operator === '!=') {
+      clauses.push(`${col} != ${quoteLiteral(val)}`);
+    } else if (columnFilter.operator === 'LIKE') {
+      clauses.push(`CAST(${col} AS TEXT) LIKE ${quoteLiteral(`%${val}%`)}`);
+    } else {
+      clauses.push(`${col} = ${quoteLiteral(val)}`);
+    }
+  }
+
+  const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
   return runSqlite(databasePath, `SELECT * FROM ${quoteSqliteIdentifier(tableName)}${where} LIMIT ${safeLimit};`);
 }
 
@@ -234,17 +251,36 @@ async function getMariaIncomingForeignKeys(connection, tableName) {
   );
 }
 
-async function getMariaData(connection, tableName, filter, limit) {
+async function getMariaData(connection, tableName, filter, limit, columnFilter) {
   const safeLimit = clamp(limit, 1, 500);
   const columns = await getMariaColumns(connection, tableName);
   const searchableColumns = columns.map((column) => column.name);
-  const where = String(filter || '').trim()
-    ? ` WHERE ${searchableColumns
-        .map((columnName) => `CAST(${quoteMariaIdentifier(columnName)} AS CHAR) LIKE ?`)
-        .join(' OR ')}`
-    : '';
-  const values = String(filter || '').trim() ? searchableColumns.map(() => `%${filter.trim()}%`) : [];
+  const clauses = [];
+  const values = [];
 
+  if (String(filter || '').trim()) {
+    clauses.push(`(${searchableColumns
+      .map((col) => `CAST(${quoteMariaIdentifier(col)} AS CHAR) LIKE ?`)
+      .join(' OR ')})`);
+    searchableColumns.forEach(() => values.push(`%${filter.trim()}%`));
+  }
+
+  if (columnFilter?.column && String(columnFilter.value ?? '').trim()) {
+    const col = quoteMariaIdentifier(columnFilter.column);
+    const val = String(columnFilter.value).trim();
+    if (columnFilter.operator === 'BETWEEN' && String(columnFilter.valueTo ?? '').trim()) {
+      clauses.push(`${col} BETWEEN ? AND ?`);
+      values.push(val, String(columnFilter.valueTo).trim());
+    } else if (columnFilter.operator === '!=') {
+      clauses.push(`${col} != ?`); values.push(val);
+    } else if (columnFilter.operator === 'LIKE') {
+      clauses.push(`CAST(${col} AS CHAR) LIKE ?`); values.push(`%${val}%`);
+    } else {
+      clauses.push(`${col} = ?`); values.push(val);
+    }
+  }
+
+  const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
   return runMariaDb(connection, `SELECT * FROM ${quoteMariaIdentifier(tableName)}${where} LIMIT ${safeLimit};`, values);
 }
 
@@ -264,10 +300,10 @@ async function getColumns(connection, tableName) {
   return connection.type === 'mariadb' ? getMariaColumns(connection, tableName) : getSqliteColumns(connection.path, tableName);
 }
 
-async function getData(connection, tableName, filter, limit) {
+async function getData(connection, tableName, filter, limit, columnFilter) {
   return connection.type === 'mariadb'
-    ? getMariaData(connection, tableName, filter, limit)
-    : getSqliteData(connection.path, tableName, filter, limit);
+    ? getMariaData(connection, tableName, filter, limit, columnFilter)
+    : getSqliteData(connection.path, tableName, filter, limit, columnFilter);
 }
 
 async function getOutgoingForeignKeys(connection, tableName) {
@@ -550,10 +586,10 @@ ipcMain.handle('database:relation-rows', async (_event, { connection, tableName,
   return { rows };
 });
 
-ipcMain.handle('database:table', async (_event, { connection, tableName, filter, limit }) => {
+ipcMain.handle('database:table', async (_event, { connection, tableName, filter, limit, columnFilter }) => {
   const [columns, rows, outgoingKeys, incomingKeys] = await Promise.all([
     getColumns(connection, tableName),
-    getData(connection, tableName, filter, limit),
+    getData(connection, tableName, filter, limit, columnFilter),
     getOutgoingForeignKeys(connection, tableName),
     getIncomingForeignKeys(connection, tableName)
   ]);
