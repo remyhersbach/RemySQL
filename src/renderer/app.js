@@ -15,7 +15,8 @@ const state = {
   filterTimer: null,
   filterMode: 'text',
   filterValue: '',
-  filterValueTo: ''
+  filterValueTo: '',
+  copiedRow: null
 };
 
 const elements = {
@@ -1164,6 +1165,7 @@ elements.tabsBar.addEventListener('click', (event) => {
 
   if (tabButton) {
     state.activeTabId = tabButton.dataset.tabId;
+    state.mode = 'data';
     render();
     loadActiveTable();
   }
@@ -1244,6 +1246,67 @@ elements.filterValueToDateBtn.addEventListener('click', () => {
 
 elements.limitInput.addEventListener('change', loadActiveTable);
 
+function selectRow(tab, rowIndex) {
+  state.selectedRowIndexByTab.set(tab.id, rowIndex);
+  state.relationLookupByTab.delete(tab.id);
+  elements.dataTable.querySelector('.selected-row')?.classList.remove('selected-row');
+  const rowEl = elements.dataTable.querySelector(`tr[data-row-index="${rowIndex}"]`);
+  rowEl?.classList.add('selected-row');
+  rowEl?.scrollIntoView({ block: 'nearest' });
+  const payload = state.tablePayloadByTab.get(tab.id);
+  if (payload) renderRelations(payload);
+}
+
+function addPendingRow(tab, payload, values) {
+  capturePendingInputValues();
+  const columns = payload.columns || [];
+  const filled = Object.fromEntries(columns.map((col) => [col.name, values?.[col.name] ?? '']));
+  const pendingRows = state.pendingRowsByTab.get(tab.id) || [];
+  pendingRows.push({ id: crypto.randomUUID(), values: filled, error: null });
+  state.pendingRowsByTab.set(tab.id, pendingRows);
+  renderTableView();
+  const allPendingRows = elements.dataTable.querySelectorAll('.pending-row');
+  allPendingRows[allPendingRows.length - 1]?.querySelector('input')?.focus();
+}
+
+window.addEventListener('keydown', (e) => {
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+  const isArrow = e.key === 'ArrowDown' || e.key === 'ArrowUp';
+  const isCopy = (e.metaKey || e.ctrlKey) && e.key === 'c';
+  const isPaste = (e.metaKey || e.ctrlKey) && e.key === 'v';
+  if (!isArrow && !isCopy && !isPaste) return;
+
+  const tab = getActiveTab();
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  if (!tab || !payload) return;
+
+  const rows = payload.rows || [];
+  const cur = state.selectedRowIndexByTab.get(tab.id) ?? -1;
+
+  if (isArrow) {
+    if (!rows.length) return;
+    e.preventDefault();
+    const next = e.key === 'ArrowDown'
+      ? (cur < 0 ? 0 : Math.min(cur + 1, rows.length - 1))
+      : Math.max(cur - 1, 0);
+    selectRow(tab, next);
+  } else if (isCopy) {
+    if (cur < 0 || cur >= rows.length) return;
+    const pkCols = new Set(payload.columns.filter((col) => Number(col.pk)).map((col) => col.name));
+    state.copiedRow = Object.fromEntries(
+      payload.columns.filter((col) => !pkCols.has(col.name)).map((col) => [col.name, rows[cur][col.name] ?? ''])
+    );
+    e.preventDefault();
+    showToast('Rij gekopieerd');
+  } else if (isPaste) {
+    if (!state.copiedRow) return;
+    e.preventDefault();
+    addPendingRow(tab, payload, state.copiedRow);
+  }
+});
+
 elements.dataTable.addEventListener('click', async (event) => {
   const tab = getActiveTab();
   if (!tab) return;
@@ -1262,16 +1325,7 @@ elements.dataTable.addEventListener('click', async (event) => {
 
   if (!row) return;
 
-  // Update selected row class directly — do NOT call renderTableView() here
-  // because that would rebuild the DOM and break dblclick-to-edit detection.
-  elements.dataTable.querySelector('.selected-row')?.classList.remove('selected-row');
-  row.classList.add('selected-row');
-
-  state.selectedRowIndexByTab.set(tab.id, Number(row.dataset.rowIndex));
-  state.relationLookupByTab.delete(tab.id);
-
-  const payload = state.tablePayloadByTab.get(tab.id);
-  if (payload) renderRelations(payload);
+  selectRow(tab, Number(row.dataset.rowIndex));
 
   if (relationValueButton) {
     await loadRelationLookup(
@@ -1285,18 +1339,7 @@ elements.addRowButton.addEventListener('click', () => {
   const tab = getActiveTab();
   const payload = state.tablePayloadByTab.get(tab?.id);
   if (!tab || !payload) return;
-
-  capturePendingInputValues();
-
-  const columns = payload.columns || [];
-  const values = Object.fromEntries(columns.map((col) => [col.name, '']));
-  const pendingRows = state.pendingRowsByTab.get(tab.id) || [];
-  pendingRows.push({ id: crypto.randomUUID(), values, error: null });
-  state.pendingRowsByTab.set(tab.id, pendingRows);
-  renderTableView();
-
-  const allPendingRows = elements.dataTable.querySelectorAll('.pending-row');
-  allPendingRows[allPendingRows.length - 1]?.querySelector('input')?.focus();
+  addPendingRow(tab, payload, {});
 });
 
 elements.saveRowsButton.addEventListener('click', saveAll);

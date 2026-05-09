@@ -6,6 +6,8 @@
   --surface: #ffffff;
   --surface-alt: #eef3f9;
   --row-hover: #f4f8fc;
+  --row-selected: #dbeafe;
+  --row-selected-text: #1e3a5f;
   --th-bg: #f4f7fb;
 
   --sidebar-bg: #eef3f9;
@@ -62,6 +64,8 @@
   --surface: #131c2e;
   --surface-alt: #1c2538;
   --row-hover: #161f30;
+  --row-selected: #1e3a5f;
+  --row-selected-text: #bfdbfe;
   --th-bg: #131c2e;
 
   --sidebar-bg: #080d18;
@@ -902,6 +906,12 @@ th {
 
 tbody tr:hover {
   background: var(--row-hover);
+}
+
+tr.selected-row,
+tr.selected-row:hover {
+  background: var(--row-selected);
+  color: var(--row-selected-text);
 }
 
 /* ── Edited cells ────────────────────────────────────────────────────────── */
