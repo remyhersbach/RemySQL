@@ -1,6 +1,7 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage } = require('electron');
-const { execFile } = require('node:child_process');
-const { existsSync, readFileSync, writeFileSync, mkdirSync } = require('node:fs');
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, safeStorage } = require('electron');
+const { execFile, spawn } = require('node:child_process');
+const { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync } = require('node:fs');
+const net = require('node:net');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 app.name = 'RemySQL';
@@ -8,11 +9,16 @@ app.name = 'RemySQL';
 let mariadb;
 
 let mainWindow;
+const sshSessions = new Map();
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, Number(value) || min));
 const quoteSqliteIdentifier = (name) => `"${String(name).replaceAll('"', '""')}"`;
 const quoteMariaIdentifier = (name) => `\`${String(name).replaceAll('`', '``')}\``;
 const quoteLiteral = (value) => `'${String(value).replaceAll("'", "''")}'`;
+const isHexColor = (value) => /^#[0-9a-f]{6}$/i.test(String(value || ''));
+const connectionColors = new Set(['#ffffff', '#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#64748b']);
+const isConnectionColor = (value) => connectionColors.has(String(value || '').toLowerCase());
+const encryptedConnectionsVersion = 1;
 
 function getConnectionsPath() {
   const dir = app.getPath('userData');
@@ -22,6 +28,31 @@ function getConnectionsPath() {
   return path.join(dir, 'connections.json');
 }
 
+function assertCanEncryptConnections() {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Connecties kunnen niet veilig worden opgeslagen: OS-versleuteling is niet beschikbaar.');
+  }
+}
+
+function encryptConnections(connections) {
+  assertCanEncryptConnections();
+  return {
+    version: encryptedConnectionsVersion,
+    encrypted: true,
+    data: safeStorage.encryptString(JSON.stringify(connections)).toString('base64')
+  };
+}
+
+function decryptConnections(payload) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Connecties kunnen niet worden gelezen: OS-versleuteling is niet beschikbaar.');
+  }
+
+  const decrypted = safeStorage.decryptString(Buffer.from(payload.data, 'base64'));
+  const connections = JSON.parse(decrypted);
+  return Array.isArray(connections) ? connections : [];
+}
+
 function readConnections() {
   const filePath = getConnectionsPath();
   if (!existsSync(filePath)) {
@@ -29,14 +60,273 @@ function readConnections() {
   }
 
   try {
-    return JSON.parse(readFileSync(filePath, 'utf8'));
-  } catch {
-    return [];
+    const payload = JSON.parse(readFileSync(filePath, 'utf8'));
+    return payload?.encrypted && payload?.data ? decryptConnections(payload) : [];
+  } catch (error) {
+    throw new Error(`Connecties konden niet worden gelezen: ${error.message}`);
   }
 }
 
 function writeConnections(connections) {
-  writeFileSync(getConnectionsPath(), JSON.stringify(connections, null, 2));
+  writeFileSync(getConnectionsPath(), JSON.stringify(encryptConnections(connections), null, 2));
+}
+
+function getNextGroupName(connections) {
+  const highest = connections.reduce((max, connection) => {
+    const match = String(connection.groupName || '').match(/^Groep\s+(\d+)$/i);
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+
+  return `Groep ${highest + 1}`;
+}
+
+function resolveHomePath(filePath) {
+  return String(filePath || '').startsWith('~/')
+    ? path.join(app.getPath('home'), String(filePath).slice(2))
+    : String(filePath || '');
+}
+
+function buildSshCommand(connection, sessionId) {
+  const authMode = connection.keyPath
+    ? 'key'
+    : connection.password
+      ? 'password'
+      : 'ssh-agent/default key';
+  const args = [
+    '-tt',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-p', String(connection.port || 22)
+  ];
+
+  if (connection.keyPath) {
+    args.push('-i', resolveHomePath(connection.keyPath));
+  }
+
+  args.push(`${connection.user}@${connection.host}`);
+
+  if (connection.password && !connection.keyPath) {
+    const askpassPath = path.join(app.getPath('userData'), `ssh-askpass-${sessionId}.sh`);
+    writeFileSync(askpassPath, '#!/bin/sh\nprintf "%s\\n" "$REMYSQL_SSH_PASSWORD"\n');
+    chmodSync(askpassPath, 0o700);
+
+    return {
+      command: 'ssh',
+      args,
+      authMode,
+      env: {
+        SSH_ASKPASS: askpassPath,
+        SSH_ASKPASS_REQUIRE: 'force',
+        DISPLAY: process.env.DISPLAY || ':0',
+        REMYSQL_SSH_PASSWORD: connection.password
+      },
+      cleanup: () => {
+        try { unlinkSync(askpassPath); } catch {}
+      }
+    };
+  }
+
+  return { command: 'ssh', args, authMode };
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function buildSshTerminalCommand(connection) {
+  const args = [
+    '-tt',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-p', String(connection.port || 22)
+  ];
+
+  if (connection.keyPath) {
+    args.push('-i', resolveHomePath(connection.keyPath));
+  }
+
+  args.push(`${connection.user}@${connection.host}`);
+  return ['ssh', ...args].map(shellQuote).join(' ');
+}
+
+function getSshFailureHint(output, code, command, authMode) {
+  const text = String(output || '').toLowerCase();
+
+  if (/permission denied/.test(text)) {
+    return 'Authenticatie geweigerd. Controleer username, wachtwoord, SSH key en of de key toegang heeft op deze server.';
+  }
+
+  if (/connection refused/.test(text)) {
+    return 'Connectie geweigerd. Controleer of SSH draait op deze host en poort.';
+  }
+
+  if (/connection timed out|operation timed out|no route to host|network is unreachable/.test(text)) {
+    return 'Server is niet bereikbaar. Controleer host, poort, VPN/firewall en netwerkverbinding.';
+  }
+
+  if (/could not resolve hostname|name or service not known|nodename nor servname/.test(text)) {
+    return 'Hostnaam kon niet worden gevonden. Controleer de hostnaam of DNS.';
+  }
+
+  if (/identity file .* not accessible|no such file or directory/.test(text)) {
+    return 'SSH key-bestand kon niet worden gevonden. Controleer het key pad.';
+  }
+
+  if (/bad permissions|unprotected private key file/.test(text)) {
+    return 'SSH key heeft onveilige bestandsrechten. Zet meestal chmod 600 op de private key.';
+  }
+
+  if (/host key verification failed/.test(text)) {
+    return 'Host key verificatie faalde. Controleer of de server bekend/vertrouwd is en ruim eventueel de oude known_hosts entry op.';
+  }
+
+  if (/too many authentication failures/.test(text)) {
+    return 'Te veel SSH keys geprobeerd. Gebruik een specifieke key of beperk je SSH agent.';
+  }
+
+  if (/no supported authentication methods available/.test(text)) {
+    return 'Geen bruikbare authenticatiemethode beschikbaar. Configureer een SSH key of schakel password-auth in op de server.';
+  }
+
+  if (code === 1 && !text.trim()) {
+    return `SSH stopte zonder fouttekst. Controleer host/poort/user en probeer dezelfde verbinding in Terminal. Authenticatie in de app gebruikt nu: ${authMode}.`;
+  }
+
+  if (code === 1) {
+    return `Algemene SSH-fout. Controleer host, poort, user en authenticatie. Authenticatie in de app gebruikt nu: ${authMode}.`;
+  }
+
+  if (code === 255) {
+    return 'SSH kon geen sessie opzetten. Bekijk de regels hierboven voor de exacte netwerk- of authenticatiefout.';
+  }
+
+  return code ? `SSH stopte met code ${code}. Bekijk de regels hierboven voor de exacte fout.` : '';
+}
+
+function getFreeLocalPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      server.close(() => resolve(port));
+    });
+    server.on('error', reject);
+  });
+}
+
+function waitForLocalPort(port, child, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    let lastError = null;
+    let settled = false;
+
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+
+    const onExit = (code) => {
+      fail(new Error(`SSH-tunnel stopte voordat de database bereikbaar was${code ? ` (code ${code})` : ''}.`));
+    };
+    const onError = (error) => {
+      fail(error);
+    };
+
+    child.once('close', onExit);
+    child.once('error', onError);
+
+    const attempt = () => {
+      if (settled) return;
+      const socket = net.createConnection({ host: '127.0.0.1', port });
+      socket.once('connect', () => {
+        settled = true;
+        child.off('close', onExit);
+        child.off('error', onError);
+        socket.end();
+        resolve();
+      });
+      socket.once('error', (error) => {
+        lastError = error;
+        socket.destroy();
+        if (Date.now() >= deadline) {
+          fail(lastError || new Error('SSH-tunnel kwam niet op tijd online.'));
+          return;
+        }
+        setTimeout(attempt, 100);
+      });
+    };
+
+    attempt();
+  });
+}
+
+async function startDatabaseSshTunnel(connection) {
+  const tunnel = connection.sshTunnel;
+  if (!tunnel) {
+    return null;
+  }
+
+  const sessionId = randomUUID();
+  const localPort = await getFreeLocalPort();
+  const authMode = tunnel.keyPath
+    ? 'key'
+    : tunnel.password
+      ? 'password'
+      : 'ssh-agent/default key';
+  const args = [
+    '-N',
+    '-o', 'ExitOnForwardFailure=yes',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-L', `127.0.0.1:${localPort}:${connection.host}:${connection.port}`,
+    '-p', String(tunnel.port || 22)
+  ];
+
+  if (tunnel.keyPath) {
+    args.push('-i', resolveHomePath(tunnel.keyPath));
+  }
+
+  args.push(`${tunnel.user}@${tunnel.host}`);
+
+  let cleanup = null;
+  const env = {};
+  if (tunnel.password && !tunnel.keyPath) {
+    const askpassPath = path.join(app.getPath('userData'), `ssh-tunnel-askpass-${sessionId}.sh`);
+    writeFileSync(askpassPath, '#!/bin/sh\nprintf "%s\\n" "$REMYSQL_SSH_PASSWORD"\n');
+    chmodSync(askpassPath, 0o700);
+    env.SSH_ASKPASS = askpassPath;
+    env.SSH_ASKPASS_REQUIRE = 'force';
+    env.DISPLAY = process.env.DISPLAY || ':0';
+    env.REMYSQL_SSH_PASSWORD = tunnel.password;
+    cleanup = () => {
+      try { unlinkSync(askpassPath); } catch {}
+    };
+  }
+
+  const child = spawn('ssh', args, {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    env: { ...process.env, ...env },
+    detached: false
+  });
+
+  let diagnosticOutput = `auth=${authMode}; ssh=${tunnel.user}@${tunnel.host}:${tunnel.port}; target=${connection.host}:${connection.port}`;
+  child.stderr.on('data', (data) => {
+    diagnosticOutput = `${diagnosticOutput}${data.toString()}`.slice(-6000);
+  });
+
+  const closeTunnel = () => {
+    if (!child.killed) {
+      child.kill();
+    }
+    cleanup?.();
+  };
+
+  try {
+    await waitForLocalPort(localPort, child);
+    return { host: '127.0.0.1', port: localPort, close: closeTunnel };
+  } catch (error) {
+    closeTunnel();
+    const hint = getSshFailureHint(diagnosticOutput, 1, 'ssh', authMode);
+    throw new Error(`SSH-tunnel kon niet worden opgezet. ${hint || error.message}`);
+  }
 }
 
 function runSqlite(databasePath, sql) {
@@ -82,14 +372,22 @@ function normalizeDbRows(rows) {
   ));
 }
 
-async function runMariaDb(connection, sql, values = []) {
+async function openMariaDbClient(connection) {
   if (!mariadb) mariadb = await import('mariadb');
+  const tunnel = await startDatabaseSshTunnel(connection);
   let client;
+
+  const cleanup = async () => {
+    if (client) {
+      await client.end();
+    }
+    tunnel?.close();
+  };
 
   try {
     client = await mariadb.createConnection({
-      host: connection.host,
-      port: Number(connection.port),
+      host: tunnel?.host || connection.host,
+      port: Number(tunnel?.port || connection.port),
       user: connection.user,
       password: connection.password || '',
       database: connection.database,
@@ -100,13 +398,25 @@ async function runMariaDb(connection, sql, values = []) {
       decimalAsNumber: false
     });
 
-    const rows = await client.query(sql, values);
+    return { client, cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+async function runMariaDb(connection, sql, values = []) {
+  let handle;
+
+  try {
+    handle = await openMariaDbClient(connection);
+    const rows = await handle.client.query(sql, values);
     return Array.isArray(rows) ? normalizeDbRows(rows) : [];
   } catch (error) {
     throw new Error(error.sqlMessage || error.message || 'MariaDB query mislukt.');
   } finally {
-    if (client) {
-      await client.end();
+    if (handle) {
+      await handle.cleanup();
     }
   }
 }
@@ -286,7 +596,10 @@ async function getMariaData(connection, tableName, filter, limit, columnFilter) 
 
 function getConnectionLabel(connection) {
   if (connection.type === 'mariadb') {
-    return `${connection.user}@${connection.host}:${connection.port}/${connection.database}`;
+    const databaseTarget = `${connection.user}@${connection.host}:${connection.port}/${connection.database}`;
+    return connection.sshTunnel
+      ? `${databaseTarget} via ${connection.sshTunnel.user}@${connection.sshTunnel.host}:${connection.sshTunnel.port || 22}`
+      : databaseTarget;
   }
 
   return connection.path;
@@ -419,7 +732,19 @@ async function insertMariaRow(connection, tableName, values) {
 }
 
 function normalizeConnection(connection) {
-  const type = connection.type === 'sqlite' ? 'sqlite' : 'mariadb';
+  const type = ['sqlite', 'ssh'].includes(connection.type) ? connection.type : 'mariadb';
+  const backgroundColor = isHexColor(connection.backgroundColor) ? connection.backgroundColor : null;
+  const groupId = connection.groupId ? String(connection.groupId) : null;
+  const groupName = groupId ? String(connection.groupName || 'Groep') : null;
+  const normalizeTunnel = (value) => value
+    ? {
+        host: String(value.host || ''),
+        port: clamp(value.port || 22, 1, 65535),
+        user: String(value.user || ''),
+        password: String(value.password || ''),
+        keyPath: String(value.keyPath || '')
+      }
+    : null;
 
   if (type === 'sqlite') {
     const normalized = {
@@ -430,8 +755,50 @@ function normalizeConnection(connection) {
       createdAt: connection.createdAt || new Date().toISOString()
     };
 
+    if (backgroundColor) {
+      normalized.backgroundColor = backgroundColor;
+    }
+
+    if (groupId) {
+      normalized.groupId = groupId;
+      normalized.groupName = groupName;
+    }
+
+    if (connection.readOnly) {
+      normalized.readOnly = true;
+    }
+
     if (!normalized.path || !existsSync(normalized.path)) {
       throw new Error('Databasebestand bestaat niet.');
+    }
+
+    return normalized;
+  }
+
+  if (type === 'ssh') {
+    const normalized = {
+      id: connection.id || randomUUID(),
+      type,
+      name: String(connection.name || connection.host || 'SSH connectie'),
+      host: String(connection.host || ''),
+      port: clamp(connection.port || 22, 1, 65535),
+      user: String(connection.user || ''),
+      password: String(connection.password || ''),
+      keyPath: String(connection.keyPath || ''),
+      createdAt: connection.createdAt || new Date().toISOString()
+    };
+
+    if (backgroundColor) {
+      normalized.backgroundColor = backgroundColor;
+    }
+
+    if (groupId) {
+      normalized.groupId = groupId;
+      normalized.groupName = groupName;
+    }
+
+    if (!normalized.host || !normalized.user) {
+      throw new Error('SSH host en user zijn verplicht.');
     }
 
     return normalized;
@@ -448,9 +815,30 @@ function normalizeConnection(connection) {
     database: String(connection.database || ''),
     createdAt: connection.createdAt || new Date().toISOString()
   };
+  const sshTunnel = normalizeTunnel(connection.sshTunnel);
+
+  if (backgroundColor) {
+    normalized.backgroundColor = backgroundColor;
+  }
+
+  if (groupId) {
+    normalized.groupId = groupId;
+    normalized.groupName = groupName;
+  }
 
   if (!normalized.user || !normalized.database) {
     throw new Error('MariaDB user en database zijn verplicht.');
+  }
+
+  if (sshTunnel) {
+    if (!sshTunnel.host || !sshTunnel.user) {
+      throw new Error('SSH-tunnel host en user zijn verplicht.');
+    }
+    normalized.sshTunnel = sshTunnel;
+  }
+
+  if (connection.readOnly) {
+    normalized.readOnly = true;
   }
 
   return normalized;
@@ -465,10 +853,22 @@ function sameConnection(left, right) {
     return left.path === right.path;
   }
 
+  if (left.type === 'ssh') {
+    return left.host === right.host
+      && Number(left.port) === Number(right.port)
+      && left.user === right.user;
+  }
+
   return left.host === right.host
     && Number(left.port) === Number(right.port)
     && left.user === right.user
-    && left.database === right.database;
+    && left.database === right.database
+    && Boolean(left.sshTunnel) === Boolean(right.sshTunnel)
+    && (!left.sshTunnel || (
+      left.sshTunnel.host === right.sshTunnel.host
+      && Number(left.sshTunnel.port) === Number(right.sshTunnel.port)
+      && left.sshTunnel.user === right.sshTunnel.user
+    ));
 }
 
 function createWindow() {
@@ -533,6 +933,10 @@ function createMenu() {
           accelerator: 'CmdOrCtrl+Shift+N',
           click: openConnectionDialog
         },
+        {
+          label: 'Nieuwe SSH connectie...',
+          click: () => mainWindow?.webContents.send('connection:new-ssh')
+        },
         { type: 'separator' },
         {
           label: 'Herlaad venster',
@@ -559,7 +963,7 @@ ipcMain.handle('connections:list', () => readConnections());
 
 ipcMain.handle('connections:add', async (_event, connection) => {
   const normalized = normalizeConnection(connection);
-  const tables = await getTables(normalized);
+  const tables = normalized.type === 'ssh' ? [] : await getTables(normalized);
   const connections = readConnections();
   const nextConnections = [
     normalized,
@@ -574,6 +978,169 @@ ipcMain.handle('connections:remove', (_event, connectionId) => {
   const nextConnections = readConnections().filter((connection) => connection.id !== connectionId);
   writeConnections(nextConnections);
   return nextConnections;
+});
+
+ipcMain.handle('connections:update-background', (_event, { connectionId, backgroundColor }) => {
+  if (!isConnectionColor(backgroundColor)) {
+    throw new Error('Ongeldige kleur.');
+  }
+
+  const connections = readConnections();
+  const nextConnections = connections.map((connection) => (
+    connection.id === connectionId
+      ? { ...connection, backgroundColor }
+      : connection
+  ));
+
+  writeConnections(nextConnections);
+  return nextConnections;
+});
+
+ipcMain.handle('connections:group', (_event, { sourceConnectionId, targetConnectionId }) => {
+  if (!sourceConnectionId || !targetConnectionId || sourceConnectionId === targetConnectionId) {
+    return { connections: readConnections(), groupId: null };
+  }
+
+  const connections = readConnections();
+  const source = connections.find((connection) => connection.id === sourceConnectionId);
+  const target = connections.find((connection) => connection.id === targetConnectionId);
+
+  if (!source || !target) {
+    return { connections, groupId: null };
+  }
+
+  const groupId = target.groupId || source.groupId || randomUUID();
+  const groupName = target.groupName || source.groupName || getNextGroupName(connections);
+  const groupsToMerge = new Set([source.groupId, target.groupId].filter(Boolean));
+
+  const nextConnections = connections.map((connection) => {
+    const joinsGroup = connection.id === source.id
+      || connection.id === target.id
+      || groupsToMerge.has(connection.groupId);
+
+    return joinsGroup
+      ? { ...connection, groupId, groupName }
+      : connection;
+  });
+
+  writeConnections(nextConnections);
+  return { connections: nextConnections, groupId };
+});
+
+ipcMain.handle('connections:update-group-name', (_event, { groupId, groupName }) => {
+  const normalizedGroupId = String(groupId || '');
+  const normalizedGroupName = String(groupName || '').trim() || 'Groep';
+
+  if (!normalizedGroupId) {
+    return readConnections();
+  }
+
+  const nextConnections = readConnections().map((connection) => (
+    connection.groupId === normalizedGroupId
+      ? { ...connection, groupName: normalizedGroupName }
+      : connection
+  ));
+
+  writeConnections(nextConnections);
+  return nextConnections;
+});
+
+ipcMain.handle('ssh:start', (_event, connection) => {
+  const normalized = normalizeConnection({ ...connection, type: 'ssh' });
+  const sessionId = randomUUID();
+  const { command, args, authMode, env = {}, cleanup = null } = buildSshCommand(normalized, sessionId);
+  const child = spawn(command, args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, ...env, TERM: 'xterm-256color' },
+    detached: false
+  });
+
+  sshSessions.set(sessionId, { child, cleanup });
+  let didCleanup = false;
+  const cleanupSession = () => {
+    if (didCleanup) return;
+    didCleanup = true;
+    cleanup?.();
+  };
+  let diagnosticOutput = `auth=${authMode}; host=${normalized.host}; port=${normalized.port}; user=${normalized.user}; command=${command}`;
+  mainWindow?.webContents.send('ssh:data', {
+    sessionId,
+    data: `SSH diagnose: ${normalized.user}@${normalized.host}:${normalized.port} via ${authMode}\n`
+  });
+
+  const sendData = (data) => {
+    const text = data.toString();
+    diagnosticOutput = `${diagnosticOutput}${text}`.slice(-6000);
+    mainWindow?.webContents.send('ssh:data', { sessionId, data: text });
+  };
+
+  child.stdout.on('data', sendData);
+  child.stderr.on('data', sendData);
+  child.on('error', (error) => {
+    const message = error.message;
+    diagnosticOutput = `${diagnosticOutput}\n${message}`;
+    mainWindow?.webContents.send('ssh:data', { sessionId, data: `\n${message}\n` });
+    mainWindow?.webContents.send('ssh:exit', { sessionId, code: 1 });
+    cleanupSession();
+    sshSessions.delete(sessionId);
+  });
+  child.on('close', (code) => {
+    if (code) {
+      const hint = getSshFailureHint(diagnosticOutput, code, command, authMode);
+      if (hint) {
+        mainWindow?.webContents.send('ssh:data', { sessionId, data: `\nHint: ${hint}\n` });
+      }
+    }
+    mainWindow?.webContents.send('ssh:exit', { sessionId, code });
+    cleanupSession();
+    sshSessions.delete(sessionId);
+  });
+
+  return { sessionId };
+});
+
+ipcMain.handle('ssh:open-terminal', async (_event, connection) => {
+  const normalized = normalizeConnection({ ...connection, type: 'ssh' });
+  const command = buildSshTerminalCommand(normalized);
+  const title = String(normalized.name || getConnectionLabel(normalized)).replaceAll('"', '\\"');
+  const script = [
+    'tell application "Terminal"',
+    'activate',
+    `do script "printf '\\\\e]0;${title}\\\\a'; ${command}"`,
+    'end tell'
+  ].join('\n');
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('osascript', ['-e', script], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let errorOutput = '';
+    child.stderr.on('data', (data) => {
+      errorOutput += data.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code) {
+        reject(new Error(errorOutput || `Terminal openen mislukt met code ${code}.`));
+        return;
+      }
+      resolve({ ok: true });
+    });
+  });
+});
+
+ipcMain.handle('ssh:write', (_event, { sessionId, data }) => {
+  const session = sshSessions.get(sessionId);
+  if (session?.child && !session.child.killed) {
+    session.child.stdin.write(data);
+  }
+});
+
+ipcMain.handle('ssh:stop', (_event, sessionId) => {
+  const session = sshSessions.get(sessionId);
+  if (session?.child && !session.child.killed) {
+    session.child.kill();
+  }
+  session?.cleanup?.();
+  sshSessions.delete(sessionId);
 });
 
 ipcMain.handle('database:schema', async (_event, connection) => {
@@ -639,12 +1206,34 @@ ipcMain.handle('database:insert-rows', async (_event, { connection, tableName, r
   return results;
 });
 
+ipcMain.handle('database:run-sql', async (_event, { connection, sql }) => {
+  const trimmed = String(sql || '').trim();
+  if (!trimmed) throw new Error('Geen SQL opgegeven.');
+
+  if (connection.type === 'sqlite') {
+    const rows = await runSqlite(connection.path, trimmed);
+    return { rows: rows || [], affectedRows: null };
+  }
+
+  let handle;
+  try {
+    handle = await openMariaDbClient(connection);
+    const result = await handle.client.query(trimmed);
+    if (Array.isArray(result)) return { rows: normalizeDbRows(result), affectedRows: null };
+    return { rows: [], affectedRows: Number(result?.affectedRows ?? 0) };
+  } catch (error) {
+    throw new Error(error.sqlMessage || error.message || 'MariaDB query mislukt.');
+  } finally {
+    if (handle) await handle.cleanup();
+  }
+});
+
 app.whenReady().then(() => {
   createMenu();
   createWindow();
 
   if (process.platform === 'darwin') {
-    const iconPath = path.join(__dirname, '..', 'assets', 'icon.png');
+    const iconPath = path.join(__dirname, '..', 'assets', 'icon-dock.png');
     app.dock.setIcon(nativeImage.createFromPath(iconPath));
   }
 

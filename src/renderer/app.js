@@ -5,7 +5,8 @@ const state = {
   tabs: [],
   activeTabId: null,
   tablePayloadByTab: new Map(),
-  selectedRowIndexByTab: new Map(),
+  selectedRowsByTab: new Map(),
+  anchorRowByTab: new Map(),
   relationLookupByTab: new Map(),
   pendingRowsByTab: new Map(),
   editsByTab: new Map(),
@@ -16,23 +17,55 @@ const state = {
   filterMode: 'text',
   filterValue: '',
   filterValueTo: '',
-  copiedRow: null
+  copiedRows: null,
+  draggingConnectionId: null,
+  focusGroupId: null,
+  openColorConnectionId: null,
+  sshSessionByTab: new Map(),
+  sshOutputByTab: new Map(),
+  sortByTab: new Map()
 };
+
+const connectionColorOptions = [
+  { value: '#ffffff', label: 'Wit' },
+  { value: '#ef4444', label: 'Rood' },
+  { value: '#f97316', label: 'Oranje' },
+  { value: '#eab308', label: 'Geel' },
+  { value: '#22c55e', label: 'Groen' },
+  { value: '#3b82f6', label: 'Blauw' },
+  { value: '#8b5cf6', label: 'Paars' },
+  { value: '#64748b', label: 'Grijs' }
+];
 
 const elements = {
   themeToggleButton: document.querySelector('#themeToggleButton'),
   newConnectionButton: document.querySelector('#newConnectionButton'),
   connectionForm: document.querySelector('#connectionForm'),
+  connectionFormBackdrop: document.querySelector('#connectionFormBackdrop'),
+  connectionFormCloseButton: document.querySelector('#connectionFormCloseButton'),
   connectionTypeSelect: document.querySelector('#connectionTypeSelect'),
   connectionNameInput: document.querySelector('#connectionNameInput'),
   mariaFields: document.querySelector('#mariaFields'),
+  mariaConnectionModeSelect: document.querySelector('#mariaConnectionModeSelect'),
   mariaHostInput: document.querySelector('#mariaHostInput'),
   mariaPortInput: document.querySelector('#mariaPortInput'),
   mariaUserInput: document.querySelector('#mariaUserInput'),
   mariaPasswordInput: document.querySelector('#mariaPasswordInput'),
   mariaDatabaseInput: document.querySelector('#mariaDatabaseInput'),
+  mariaSshTunnelFields: document.querySelector('#mariaSshTunnelFields'),
+  mariaSshHostInput: document.querySelector('#mariaSshHostInput'),
+  mariaSshPortInput: document.querySelector('#mariaSshPortInput'),
+  mariaSshUserInput: document.querySelector('#mariaSshUserInput'),
+  mariaSshPasswordInput: document.querySelector('#mariaSshPasswordInput'),
+  mariaSshKeyPathInput: document.querySelector('#mariaSshKeyPathInput'),
   sqlitePathField: document.querySelector('#sqlitePathField'),
   connectionPathInput: document.querySelector('#connectionPathInput'),
+  sshFields: document.querySelector('#sshFields'),
+  sshHostInput: document.querySelector('#sshHostInput'),
+  sshPortInput: document.querySelector('#sshPortInput'),
+  sshUserInput: document.querySelector('#sshUserInput'),
+  sshPasswordInput: document.querySelector('#sshPasswordInput'),
+  sshKeyPathInput: document.querySelector('#sshKeyPathInput'),
   saveConnectionButton: document.querySelector('#saveConnectionButton'),
   cancelConnectionButton: document.querySelector('#cancelConnectionButton'),
   connectionFormTitle: document.querySelector('#connectionFormTitle'),
@@ -44,6 +77,12 @@ const elements = {
   tabsBar: document.querySelector('#tabsBar'),
   emptyState: document.querySelector('#emptyState'),
   tableView: document.querySelector('#tableView'),
+  sshView: document.querySelector('#sshView'),
+  sshTerminalOutput: document.querySelector('#sshTerminalOutput'),
+  sshTerminalForm: document.querySelector('#sshTerminalForm'),
+  sshTerminalInput: document.querySelector('#sshTerminalInput'),
+  sshOpenTerminalButton: document.querySelector('#sshOpenTerminalButton'),
+  sshDisconnectButton: document.querySelector('#sshDisconnectButton'),
   dataModeButton: document.querySelector('#dataModeButton'),
   structureModeButton: document.querySelector('#structureModeButton'),
   filterInput: document.querySelector('#filterInput'),
@@ -73,7 +112,18 @@ const elements = {
   datePickerInput: document.querySelector('#datePickerInput'),
   datePickerConfirm: document.querySelector('#datePickerConfirm'),
   datePickerCancel: document.querySelector('#datePickerCancel'),
-  toast: document.querySelector('#toast')
+  toast: document.querySelector('#toast'),
+  sqlButton: document.querySelector('#sqlButton'),
+  sqlBackdrop: document.querySelector('#sqlBackdrop'),
+  sqlDialog: document.querySelector('#sqlDialog'),
+  sqlDialogTitle: document.querySelector('#sqlDialogTitle'),
+  sqlDialogClose: document.querySelector('#sqlDialogClose'),
+  sqlTextarea: document.querySelector('#sqlTextarea'),
+  sqlRunButton: document.querySelector('#sqlRunButton'),
+  sqlResult: document.querySelector('#sqlResult'),
+  readOnlyBadge: document.querySelector('#readOnlyBadge'),
+  connectionReadOnlyRow: document.querySelector('#connectionReadOnlyRow'),
+  connectionReadOnlyCheckbox: document.querySelector('#connectionReadOnlyCheckbox')
 };
 
 function showToast(message) {
@@ -117,6 +167,14 @@ function formatPlainValue(value) {
   return String(value);
 }
 
+function isHexColor(value) {
+  return /^#[0-9a-f]{6}$/i.test(String(value || ''));
+}
+
+function isConnectionColor(value) {
+  return connectionColorOptions.some((option) => option.value === String(value || '').toLowerCase());
+}
+
 function getRelationKey(kind, index) {
   return `${kind}:${index}`;
 }
@@ -135,8 +193,15 @@ function getOutgoingRelationByColumn(payload, columnName) {
 }
 
 function getConnectionSummary(connection) {
+  if (connection.type === 'ssh') {
+    return `${connection.user}@${connection.host}:${connection.port || 22}`;
+  }
+
   if (connection.type === 'mariadb') {
-    return `${connection.user}@${connection.host}:${connection.port}/${connection.database}`;
+    const databaseTarget = `${connection.user}@${connection.host}:${connection.port}/${connection.database}`;
+    return connection.sshTunnel
+      ? `${databaseTarget} via ${connection.sshTunnel.user}@${connection.sshTunnel.host}:${connection.sshTunnel.port || 22}`
+      : databaseTarget;
   }
 
   return connection.path;
@@ -151,55 +216,153 @@ function sameConnection(left, right) {
     return left.path === right.path;
   }
 
+  if (left.type === 'ssh') {
+    return left.host === right.host
+      && Number(left.port) === Number(right.port)
+      && left.user === right.user;
+  }
+
   return left.host === right.host
     && Number(left.port) === Number(right.port)
     && left.user === right.user
     && left.database === right.database;
 }
 
+function isConnectionActive(connection) {
+  if (connection.type === 'ssh') {
+    return state.tabs.some((tab) => (
+      tab.connectionId === connection.id
+      && state.sshSessionByTab.has(tab.id)
+    ));
+  }
+
+  return state.schemaByConnection.has(connection.id)
+    || state.tabs.some((tab) => tab.connectionId === connection.id);
+}
+
+function getConnectionTypeIcon(type) {
+  return type === 'ssh'
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>';
+}
+
 function setConnectionFormType(type) {
-  const normalizedType = type === 'sqlite' ? 'sqlite' : 'mariadb';
+  const normalizedType = ['sqlite', 'ssh'].includes(type) ? type : 'mariadb';
   elements.connectionTypeSelect.value = normalizedType;
   elements.mariaFields.hidden = normalizedType !== 'mariadb';
   elements.sqlitePathField.hidden = normalizedType !== 'sqlite';
+  elements.sshFields.hidden = normalizedType !== 'ssh';
+  elements.mariaSshTunnelFields.hidden = normalizedType !== 'mariadb'
+    || elements.mariaConnectionModeSelect.value !== 'ssh';
+  elements.connectionReadOnlyRow.hidden = normalizedType === 'ssh';
 }
 
 function openConnectionForm(type = 'mariadb', preset = {}) {
   state.editingConnectionId = preset.id || null;
   elements.connectionFormTitle.textContent = state.editingConnectionId ? 'Connectie bewerken' : 'Nieuwe connectie';
   elements.connectionForm.hidden = false;
+  elements.connectionFormBackdrop.hidden = false;
   setConnectionFormType(type);
   elements.connectionNameInput.value = preset.name || '';
   elements.connectionPathInput.value = preset.path || '';
+  elements.mariaConnectionModeSelect.value = preset.sshTunnel ? 'ssh' : 'direct';
   elements.mariaHostInput.value = preset.host || '127.0.0.1';
   elements.mariaPortInput.value = preset.port || '3306';
   elements.mariaUserInput.value = preset.user || '';
   elements.mariaPasswordInput.value = preset.password || '';
   elements.mariaDatabaseInput.value = preset.database || '';
-  (type === 'sqlite' ? elements.connectionPathInput : elements.mariaUserInput).focus();
+  elements.mariaSshHostInput.value = preset.sshTunnel?.host || '';
+  elements.mariaSshPortInput.value = preset.sshTunnel?.port || '22';
+  elements.mariaSshUserInput.value = preset.sshTunnel?.user || '';
+  elements.mariaSshPasswordInput.value = preset.sshTunnel?.password || '';
+  elements.mariaSshKeyPathInput.value = preset.sshTunnel?.keyPath || '';
+  elements.sshHostInput.value = preset.type === 'ssh' ? (preset.host || '') : '';
+  elements.sshPortInput.value = preset.type === 'ssh' ? (preset.port || '22') : '22';
+  elements.sshUserInput.value = preset.type === 'ssh' ? (preset.user || '') : '';
+  elements.sshPasswordInput.value = preset.type === 'ssh' ? (preset.password || '') : '';
+  elements.sshKeyPathInput.value = preset.type === 'ssh' ? (preset.keyPath || '') : '';
+  elements.connectionReadOnlyCheckbox.checked = preset.readOnly || false;
+  setConnectionFormType(type);
+  const focusEl = type === 'sqlite'
+    ? elements.connectionPathInput
+    : type === 'ssh'
+      ? elements.sshHostInput
+      : elements.mariaUserInput;
+  focusEl.focus();
+}
+
+function closeConnectionForm() {
+  elements.connectionForm.hidden = true;
+  elements.connectionFormBackdrop.hidden = true;
 }
 
 function resetConnectionForm() {
   state.editingConnectionId = null;
   elements.connectionNameInput.value = '';
   elements.connectionPathInput.value = '';
+  elements.mariaConnectionModeSelect.value = 'direct';
   elements.mariaHostInput.value = '127.0.0.1';
   elements.mariaPortInput.value = '3306';
   elements.mariaUserInput.value = '';
   elements.mariaPasswordInput.value = '';
   elements.mariaDatabaseInput.value = '';
+  elements.mariaSshHostInput.value = '';
+  elements.mariaSshPortInput.value = '22';
+  elements.mariaSshUserInput.value = '';
+  elements.mariaSshPasswordInput.value = '';
+  elements.mariaSshKeyPathInput.value = '';
+  elements.sshHostInput.value = '';
+  elements.sshPortInput.value = '22';
+  elements.sshUserInput.value = '';
+  elements.sshPasswordInput.value = '';
+  elements.sshKeyPathInput.value = '';
+  elements.connectionReadOnlyCheckbox.checked = false;
 }
 
 function getConnectionFromForm() {
   const id = state.editingConnectionId || undefined;
+  const existingConnection = id ? state.connections.find((connection) => connection.id === id) : null;
+  const existingBackgroundColor = existingConnection?.backgroundColor;
+  const existingGroup = existingConnection?.groupId
+    ? { groupId: existingConnection.groupId, groupName: existingConnection.groupName }
+    : {};
+
   if (elements.connectionTypeSelect.value === 'sqlite') {
     return {
       ...(id ? { id } : {}),
       type: 'sqlite',
       name: elements.connectionNameInput.value,
-      path: elements.connectionPathInput.value
+      path: elements.connectionPathInput.value,
+      ...(elements.connectionReadOnlyCheckbox.checked ? { readOnly: true } : {}),
+      ...(existingBackgroundColor ? { backgroundColor: existingBackgroundColor } : {}),
+      ...existingGroup
     };
   }
+
+  if (elements.connectionTypeSelect.value === 'ssh') {
+    return {
+      ...(id ? { id } : {}),
+      type: 'ssh',
+      name: elements.connectionNameInput.value || elements.sshHostInput.value,
+      host: elements.sshHostInput.value,
+      port: elements.sshPortInput.value || '22',
+      user: elements.sshUserInput.value,
+      password: elements.sshPasswordInput.value,
+      keyPath: elements.sshKeyPathInput.value,
+      ...(existingBackgroundColor ? { backgroundColor: existingBackgroundColor } : {}),
+      ...existingGroup
+    };
+  }
+
+  const sshTunnel = elements.mariaConnectionModeSelect.value === 'ssh'
+    ? {
+        host: elements.mariaSshHostInput.value,
+        port: elements.mariaSshPortInput.value || '22',
+        user: elements.mariaSshUserInput.value,
+        password: elements.mariaSshPasswordInput.value,
+        keyPath: elements.mariaSshKeyPathInput.value
+      }
+    : null;
 
   return {
     ...(id ? { id } : {}),
@@ -209,22 +372,39 @@ function getConnectionFromForm() {
     port: elements.mariaPortInput.value || '3306',
     user: elements.mariaUserInput.value,
     password: elements.mariaPasswordInput.value,
-    database: elements.mariaDatabaseInput.value
+    database: elements.mariaDatabaseInput.value,
+    ...(sshTunnel ? { sshTunnel } : {}),
+    ...(elements.connectionReadOnlyCheckbox.checked ? { readOnly: true } : {}),
+    ...(existingBackgroundColor ? { backgroundColor: existingBackgroundColor } : {}),
+    ...existingGroup
   };
 }
 
 async function loadConnections() {
-  state.connections = await window.sqlBase.listConnections();
-  if (!state.activeConnectionId && state.connections.length) {
-    state.activeConnectionId = state.connections[0].id;
-    await loadSchemaForActiveConnection();
+  try {
+    state.connections = await window.sqlBase.listConnections();
+    if (!state.activeConnectionId && state.connections.length) {
+      state.activeConnectionId = state.connections[0].id;
+      if (state.connections[0].type !== 'ssh') {
+        await loadSchemaForActiveConnection();
+      }
+    }
+  } catch (error) {
+    state.connections = [];
+    state.activeConnectionId = null;
+    showToast(error.message);
   }
+
   render();
 }
 
 async function loadSchemaForActiveConnection() {
   const connection = getActiveConnection();
   if (!connection) {
+    return;
+  }
+
+  if (connection.type === 'ssh') {
     return;
   }
 
@@ -244,8 +424,11 @@ async function saveConnection(connection) {
       ...state.connections.filter((item) => item.id !== result.connection.id && !sameConnection(item, result.connection))
     ];
     state.activeConnectionId = result.connection.id;
-    state.schemaByConnection.set(result.connection.id, { tables: result.tables });
+    if (result.connection.type !== 'ssh') {
+      state.schemaByConnection.set(result.connection.id, { tables: result.tables });
+    }
     elements.connectionForm.hidden = true;
+    elements.connectionFormBackdrop.hidden = true;
     resetConnectionForm();
     render();
   } catch (error) {
@@ -254,12 +437,21 @@ async function saveConnection(connection) {
 }
 
 async function removeConnection(connectionId) {
+  for (const tab of state.tabs.filter((item) => item.connectionId === connectionId)) {
+    const sshSessionId = state.sshSessionByTab.get(tab.id);
+    if (sshSessionId) {
+      window.sqlBase.stopSsh(sshSessionId);
+    }
+    state.sshSessionByTab.delete(tab.id);
+    state.sshOutputByTab.delete(tab.id);
+  }
   state.connections = await window.sqlBase.removeConnection(connectionId);
   state.schemaByConnection.delete(connectionId);
   state.tabs = state.tabs.filter((tab) => tab.connectionId !== connectionId);
-  for (const tabId of [...state.selectedRowIndexByTab.keys()]) {
+  for (const tabId of [...state.selectedRowsByTab.keys()]) {
     if (!state.tabs.some((tab) => tab.id === tabId)) {
-      state.selectedRowIndexByTab.delete(tabId);
+      state.selectedRowsByTab.delete(tabId);
+      state.anchorRowByTab.delete(tabId);
       state.relationLookupByTab.delete(tabId);
       state.pendingRowsByTab.delete(tabId);
       state.editsByTab.delete(tabId);
@@ -268,12 +460,153 @@ async function removeConnection(connectionId) {
   if (state.activeConnectionId === connectionId) {
     state.sidebarView = 'connections';
     state.activeConnectionId = state.connections[0]?.id || null;
-    if (state.activeConnectionId) {
+    const activeConnection = getActiveConnection();
+    if (activeConnection && activeConnection.type !== 'ssh') {
       await loadSchemaForActiveConnection();
     }
   }
   state.activeTabId = state.tabs[0]?.id || null;
   render();
+}
+
+async function disconnectConnection(connectionId) {
+  const connectionTabs = state.tabs.filter((tab) => tab.connectionId === connectionId);
+
+  for (const tab of connectionTabs) {
+    const sshSessionId = state.sshSessionByTab.get(tab.id);
+    if (sshSessionId) {
+      await window.sqlBase.stopSsh(sshSessionId);
+    }
+    state.tablePayloadByTab.delete(tab.id);
+    state.selectedRowsByTab.delete(tab.id);
+    state.anchorRowByTab.delete(tab.id);
+    state.relationLookupByTab.delete(tab.id);
+    state.pendingRowsByTab.delete(tab.id);
+    state.editsByTab.delete(tab.id);
+    state.sshSessionByTab.delete(tab.id);
+    state.sshOutputByTab.delete(tab.id);
+  }
+
+  state.tabs = state.tabs.filter((tab) => tab.connectionId !== connectionId);
+  state.schemaByConnection.delete(connectionId);
+
+  if (state.activeConnectionId === connectionId) {
+    state.activeConnectionId = null;
+    state.sidebarView = 'connections';
+  }
+
+  if (!state.tabs.some((tab) => tab.id === state.activeTabId)) {
+    state.activeTabId = state.tabs[0]?.id || null;
+  }
+
+  render();
+}
+
+async function updateConnectionBackground(connectionId, backgroundColor) {
+  if (!isConnectionColor(backgroundColor)) return;
+
+  try {
+    state.connections = await window.sqlBase.updateConnectionBackground({ connectionId, backgroundColor });
+    renderConnections();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function groupConnections(sourceConnectionId, targetConnectionId) {
+  if (!sourceConnectionId || !targetConnectionId || sourceConnectionId === targetConnectionId) return;
+
+  try {
+    const result = await window.sqlBase.groupConnections({ sourceConnectionId, targetConnectionId });
+    state.connections = result.connections || state.connections;
+    state.focusGroupId = result.groupId || null;
+    render();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function updateConnectionGroupName(groupId, groupName) {
+  try {
+    state.connections = await window.sqlBase.updateConnectionGroupName({ groupId, groupName });
+    renderConnections();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function openSshConnection(connection) {
+  const existing = state.tabs.find((tab) => tab.type === 'ssh' && tab.connectionId === connection.id);
+  if (existing) {
+    state.activeTabId = existing.id;
+    render();
+    if (!state.sshSessionByTab.has(existing.id)) {
+      state.sshOutputByTab.set(existing.id, `${state.sshOutputByTab.get(existing.id) || ''}\nOpnieuw verbinden met ${getConnectionSummary(connection)}...\n`);
+      try {
+        const { sessionId } = await window.sqlBase.startSsh(connection);
+        state.sshSessionByTab.set(existing.id, sessionId);
+        renderSshView();
+      } catch (error) {
+        state.sshOutputByTab.set(existing.id, `${state.sshOutputByTab.get(existing.id) || ''}${error.message}\n`);
+        renderSshView();
+      }
+    }
+    return;
+  }
+
+  const tab = {
+    id: `ssh:${connection.id}:${Date.now()}`,
+    type: 'ssh',
+    connectionId: connection.id,
+    connectionName: connection.name,
+    tableName: connection.name
+  };
+
+  state.tabs.push(tab);
+  state.activeTabId = tab.id;
+  state.activeConnectionId = connection.id;
+  state.sidebarView = 'connections';
+  state.sshOutputByTab.set(tab.id, `Verbinden met ${getConnectionSummary(connection)}...\n`);
+  render();
+
+  try {
+    const { sessionId } = await window.sqlBase.startSsh(connection);
+    state.sshSessionByTab.set(tab.id, sessionId);
+    renderSshView();
+  } catch (error) {
+    state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}${error.message}\n`);
+    renderSshView();
+  }
+}
+
+function getActiveSshSessionId() {
+  const tab = getActiveTab();
+  return tab?.type === 'ssh' ? state.sshSessionByTab.get(tab.id) : null;
+}
+
+function appendSshOutput(sessionId, data) {
+  const tab = state.tabs.find((item) => state.sshSessionByTab.get(item.id) === sessionId);
+  if (!tab) return;
+
+  state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}${data}`);
+  if (state.activeTabId === tab.id) {
+    renderSshView();
+  }
+}
+
+function renderSshView() {
+  const tab = getActiveTab();
+  const connection = state.connections.find((item) => item.id === tab?.connectionId);
+  if (!tab || tab.type !== 'ssh') return;
+
+  elements.emptyState.hidden = true;
+  elements.tableView.hidden = true;
+  elements.sshView.hidden = false;
+  elements.refreshButton.disabled = true;
+  elements.workspaceTitle.textContent = tab.tableName;
+  elements.activeConnectionLabel.textContent = connection ? `SSH · ${getConnectionSummary(connection)}` : 'SSH';
+  elements.sshTerminalOutput.textContent = state.sshOutputByTab.get(tab.id) || '';
+  elements.sshTerminalOutput.scrollTop = elements.sshTerminalOutput.scrollHeight;
 }
 
 async function openTable(connection, tableName) {
@@ -286,6 +619,7 @@ async function openTable(connection, tableName) {
 
   const tab = {
     id: `${connection.id}:${tableName}:${Date.now()}`,
+    type: 'database',
     connectionId: connection.id,
     connectionName: connection.name,
     tableName
@@ -311,6 +645,10 @@ async function openTable(connection, tableName) {
 async function loadActiveTable() {
   const tab = getActiveTab();
   const connection = state.connections.find((item) => item.id === tab?.connectionId);
+  if (tab?.type === 'ssh') {
+    renderSshView();
+    return;
+  }
   if (!tab || !connection) {
     return;
   }
@@ -339,8 +677,15 @@ async function loadActiveTable() {
     state.relationLookupByTab.delete(tab.id);
     state.pendingRowsByTab.delete(tab.id);
     state.editsByTab.delete(tab.id);
-    if ((state.selectedRowIndexByTab.get(tab.id) ?? -1) >= payload.rows.length) {
-      state.selectedRowIndexByTab.delete(tab.id);
+    const curSelected = state.selectedRowsByTab.get(tab.id);
+    if (curSelected) {
+      for (const idx of [...curSelected]) {
+        if (idx >= payload.rows.length) curSelected.delete(idx);
+      }
+      if (!curSelected.size) {
+        state.selectedRowsByTab.delete(tab.id);
+        state.anchorRowByTab.delete(tab.id);
+      }
     }
     renderTableView();
   } catch (error) {
@@ -350,9 +695,16 @@ async function loadActiveTable() {
 
 function closeTab(tabId) {
   const index = state.tabs.findIndex((tab) => tab.id === tabId);
+  const sshSessionId = state.sshSessionByTab.get(tabId);
+  if (sshSessionId) {
+    window.sqlBase.stopSsh(sshSessionId);
+  }
   state.tabs = state.tabs.filter((tab) => tab.id !== tabId);
   state.tablePayloadByTab.delete(tabId);
-  state.selectedRowIndexByTab.delete(tabId);
+  state.sshSessionByTab.delete(tabId);
+  state.sshOutputByTab.delete(tabId);
+  state.selectedRowsByTab.delete(tabId);
+  state.anchorRowByTab.delete(tabId);
   state.relationLookupByTab.delete(tabId);
   state.pendingRowsByTab.delete(tabId);
   state.editsByTab.delete(tabId);
@@ -536,7 +888,7 @@ elements.datePickerBackdrop.addEventListener('click', () => datePickerState.onCa
 function renderConnections() {
   const connection = getActiveConnection();
 
-  if (state.sidebarView === 'tables' && connection) {
+  if (state.sidebarView === 'tables' && connection && connection.type !== 'ssh') {
     const schema = state.schemaByConnection.get(connection.id);
     const activeTab = getActiveTab();
     const chevronLeft = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="13" height="13" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>`;
@@ -578,17 +930,61 @@ function renderConnections() {
       return;
     }
 
-    for (const conn of state.connections) {
+    const appendConnectionCard = (conn, parent) => {
+      const backgroundColor = isHexColor(conn.backgroundColor) ? conn.backgroundColor.toLowerCase() : '#ffffff';
+      const typeLabel = conn.type === 'ssh' ? 'SSH' : 'Database';
+      const isActive = isConnectionActive(conn);
+      const typeIcon = getConnectionTypeIcon(conn.type);
       const item = document.createElement('article');
       item.className = 'connection-item';
+      item.dataset.connectionCardId = conn.id;
+      item.draggable = true;
+      if (isHexColor(conn.backgroundColor)) {
+        item.classList.add('has-custom-color');
+        item.style.setProperty('--connection-bg', conn.backgroundColor);
+      }
+      const colorButtons = connectionColorOptions.map((option) => `
+        <button
+          type="button"
+          class="connection-color-swatch connection-color-option ${backgroundColor === option.value ? 'active' : ''}"
+          style="--swatch-color: ${option.value}"
+          data-connection-color-id="${escapeHtml(conn.id)}"
+          data-color="${escapeHtml(option.value)}"
+          title="${escapeHtml(option.label)}"
+          aria-label="${escapeHtml(option.label)} als achtergrond voor ${escapeHtml(conn.name)}"
+        ></button>
+      `).join('');
+      const paletteOpen = state.openColorConnectionId === conn.id;
       item.innerHTML = `
+        <button
+          type="button"
+          class="connection-status-dot ${isActive ? 'active' : 'inactive'}"
+          ${isActive ? `data-disconnect-connection-id="${escapeHtml(conn.id)}"` : 'disabled'}
+          title="${isActive ? 'Disconnect' : 'Niet actief'}"
+          aria-label="${isActive ? `Disconnect ${escapeHtml(conn.name)}` : `${escapeHtml(conn.name)} is niet actief`}"
+        ></button>
         <button class="connection-button" data-connection-id="${escapeHtml(conn.id)}">
+          <span class="connection-type-icon ${conn.type === 'ssh' ? 'ssh' : 'database'}" title="${typeLabel}" aria-label="${typeLabel}">
+            ${typeIcon}
+          </span>
           <span>
             <span class="connection-name">${escapeHtml(conn.name)}</span>
             <span class="connection-path">${escapeHtml(getConnectionSummary(conn))}</span>
+            ${conn.readOnly ? '<span class="connection-read-only-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="9" height="9" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Alleen lezen</span>' : ''}
           </span>
         </button>
         <div class="connection-actions">
+          <div class="connection-color-palette ${paletteOpen ? 'open' : ''}" aria-label="Achtergrondkleur kiezen">
+            <button
+              type="button"
+              class="connection-color-swatch connection-color-current"
+              style="--swatch-color: ${backgroundColor}"
+              data-toggle-color-menu-id="${escapeHtml(conn.id)}"
+              title="Kleur kiezen"
+              aria-label="Kleur kiezen voor ${escapeHtml(conn.name)}"
+            ></button>
+            ${colorButtons}
+          </div>
           <button class="icon-button" data-edit-connection-id="${escapeHtml(conn.id)}" title="Bewerk connectie" aria-label="Bewerk connectie">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           </button>
@@ -597,7 +993,66 @@ function renderConnections() {
           </button>
         </div>
       `;
-      elements.connectionsList.appendChild(item);
+      parent.appendChild(item);
+    };
+
+    const entries = [];
+    const groups = new Map();
+
+    for (const conn of state.connections) {
+      if (!conn.groupId) {
+        entries.push({ type: 'connection', connection: conn });
+        continue;
+      }
+
+      let group = groups.get(conn.groupId);
+      if (!group) {
+        group = {
+          type: 'group',
+          id: conn.groupId,
+          name: conn.groupName || 'Groep',
+          connections: []
+        };
+        groups.set(conn.groupId, group);
+        entries.push(group);
+      }
+
+      group.connections.push(conn);
+      if (conn.groupName) group.name = conn.groupName;
+    }
+
+    for (const entry of entries) {
+      if (entry.type === 'connection') {
+        appendConnectionCard(entry.connection, elements.connectionsList);
+        continue;
+      }
+
+      const groupEl = document.createElement('section');
+      groupEl.className = 'connection-group';
+      groupEl.dataset.connectionGroupId = entry.id;
+      groupEl.innerHTML = `
+        <input
+          class="connection-group-name"
+          value="${escapeHtml(entry.name)}"
+          data-group-name-id="${escapeHtml(entry.id)}"
+          aria-label="Groepsnaam"
+        />
+        <div class="connection-group-items"></div>
+      `;
+      const groupItems = groupEl.querySelector('.connection-group-items');
+      for (const conn of entry.connections) {
+        appendConnectionCard(conn, groupItems);
+      }
+      elements.connectionsList.appendChild(groupEl);
+    }
+
+    if (state.focusGroupId) {
+      const input = elements.connectionsList.querySelector(`[data-group-name-id="${CSS.escape(state.focusGroupId)}"]`);
+      if (input) {
+        input.focus();
+        input.select();
+      }
+      state.focusGroupId = null;
     }
   }
 }
@@ -605,12 +1060,21 @@ function renderConnections() {
 function renderTabs() {
   elements.tabsBar.innerHTML = state.tabs
     .map(
-      (tab) => `
+      (tab) => {
+        const connection = state.connections.find((item) => item.id === tab.connectionId);
+        const type = tab.type === 'ssh' || connection?.type === 'ssh' ? 'ssh' : 'database';
+        const typeLabel = type === 'ssh' ? 'SSH' : 'Database';
+
+        return `
         <button class="tab-button ${tab.id === state.activeTabId ? 'active' : ''}" data-tab-id="${escapeHtml(tab.id)}">
+          <span class="tab-type-icon ${type}" title="${typeLabel}" aria-label="${typeLabel}">
+            ${getConnectionTypeIcon(type)}
+          </span>
           <span class="tab-label">${escapeHtml(tab.tableName)}</span>
           <span class="tab-close" data-close-tab-id="${escapeHtml(tab.id)}">x</span>
         </button>
-      `
+      `;
+      }
     )
     .join('');
 }
@@ -680,8 +1144,29 @@ function renderDataTable(payload) {
   const tab = getActiveTab();
   const columns = payload.columns || [];
   const rows = payload.rows || [];
-  const selectedRowIndex = state.selectedRowIndexByTab.get(tab?.id);
+  const selectedRows = state.selectedRowsByTab.get(tab?.id) || new Set();
   const edits = state.editsByTab.get(tab?.id) || new Map();
+  const sort = state.sortByTab.get(tab?.id);
+
+  const sortedItems = (() => {
+    const items = rows.map((row, i) => ({ row, originalIndex: i }));
+    if (sort?.column && sort?.direction) {
+      items.sort((a, b) => {
+        const va = a.row[sort.column];
+        const vb = b.row[sort.column];
+        if (va === null && vb === null) return 0;
+        if (va === null) return sort.direction === 'asc' ? 1 : -1;
+        if (vb === null) return sort.direction === 'asc' ? -1 : 1;
+        const na = Number(va);
+        const nb = Number(vb);
+        if (!isNaN(na) && !isNaN(nb)) return sort.direction === 'asc' ? na - nb : nb - na;
+        const sa = String(va).toLowerCase();
+        const sb = String(vb).toLowerCase();
+        return sort.direction === 'asc' ? sa.localeCompare(sb) : sb.localeCompare(sa);
+      });
+    }
+    return items;
+  })();
 
   const renderCell = (row, column, rowIndex) => {
     const editKey = `${rowIndex}:${column.name}`;
@@ -702,8 +1187,9 @@ function renderDataTable(payload) {
     }
 
     return `
-      <td class="relation-cell" title="Open ${escapeHtml(relationMatch.relation.toTable)} voor ${escapeHtml(formatPlainValue(rawValue))}">
+      <td class="relation-cell" title="Klik om ${escapeHtml(relationMatch.relation.toTable)} te openen voor ${escapeHtml(formatPlainValue(rawValue))}; dubbelklik om te bewerken">
         <button
+          type="button"
           class="relation-value-button"
           data-row-index="${rowIndex}"
           data-relation-kind="outgoing"
@@ -714,19 +1200,24 @@ function renderDataTable(payload) {
       </td>
     `;
   };
+
   elements.tableMeta.textContent = `${rows.length} rijen geladen, ${columns.length} kolommen`;
   elements.dataTable.innerHTML = `
     <thead>
-      <tr>${columns.map((column) => `<th>${escapeHtml(column.name)}</th>`).join('')}</tr>
+      <tr>${columns.map((column) => {
+        const dir = sort?.column === column.name ? sort.direction : null;
+        const arrow = dir === 'asc' ? '▲' : dir === 'desc' ? '▼' : '⇅';
+        return `<th data-sort-col="${escapeHtml(column.name)}" class="${dir ? `sorted-${dir}` : ''}">${escapeHtml(column.name)}<span class="sort-arrow">${arrow}</span></th>`;
+      }).join('')}</tr>
     </thead>
     <tbody>
       ${
-        rows.length
-          ? rows
+        sortedItems.length
+          ? sortedItems
               .map(
-                (row, index) => `
-                  <tr class="${index === selectedRowIndex ? 'selected-row' : ''}" data-row-index="${index}">
-                    ${columns.map((column) => renderCell(row, column, index)).join('')}
+                ({ row, originalIndex }) => `
+                  <tr class="${selectedRows.has(originalIndex) ? 'selected-row' : ''}" data-row-index="${originalIndex}">
+                    ${columns.map((column) => renderCell(row, column, originalIndex)).join('')}
                   </tr>
                 `
               )
@@ -802,11 +1293,11 @@ function renderRelations(payload) {
   const outgoing = payload.relations?.outgoing || [];
   const incoming = payload.relations?.incoming || [];
   const tab = getActiveTab();
-  const selectedRowIndex = state.selectedRowIndexByTab.get(tab?.id);
-  const selectedRow = Number.isInteger(selectedRowIndex) ? payload.rows?.[selectedRowIndex] : null;
+  const anchorRowIndex = state.anchorRowByTab.get(tab?.id);
+  const selectedRow = Number.isInteger(anchorRowIndex) ? payload.rows?.[anchorRowIndex] : null;
   const lookup = state.relationLookupByTab.get(tab?.id);
   const selectedNote = selectedRow
-    ? `Geselecteerde rij ${selectedRowIndex + 1}`
+    ? `Geselecteerde rij ${anchorRowIndex + 1}`
     : 'Klik op een waarde in de foreign-key kolom.';
   const renderCard = (relation, kind, index) => {
     const relationKey = getRelationKey(kind, index);
@@ -854,8 +1345,14 @@ function renderTableView() {
   capturePendingInputValues();
 
   const tab = getActiveTab();
+  if (tab?.type === 'ssh') {
+    renderSshView();
+    return;
+  }
+
   const payload = state.tablePayloadByTab.get(tab?.id);
   const activeConnection = state.connections.find((connection) => connection.id === tab?.connectionId);
+  const isReadOnly = Boolean(activeConnection?.readOnly);
   const pendingRows = state.pendingRowsByTab.get(tab?.id) || [];
   const edits = state.editsByTab.get(tab?.id);
   const hasPending = pendingRows.length > 0 || (edits && edits.size > 0);
@@ -863,10 +1360,13 @@ function renderTableView() {
 
   elements.emptyState.hidden = Boolean(tab);
   elements.tableView.hidden = !tab;
+  elements.sshView.hidden = true;
   elements.refreshButton.disabled = !activeConnection;
   elements.tableActions.hidden = !tab || !payload;
-  elements.addRowButton.disabled = !isDataMode;
+  elements.addRowButton.disabled = !isDataMode || isReadOnly;
+  elements.sqlButton.disabled = !tab || !payload || isReadOnly;
   elements.pendingActions.hidden = !hasPending || !isDataMode;
+  elements.readOnlyBadge.hidden = !isReadOnly || !tab;
   elements.filterArea.hidden = !isDataMode;
 
   if (!tab) {
@@ -910,8 +1410,8 @@ async function loadRelationLookup(kind, index) {
   const tab = getActiveTab();
   const payload = state.tablePayloadByTab.get(tab?.id);
   const connection = state.connections.find((item) => item.id === tab?.connectionId);
-  const selectedRowIndex = state.selectedRowIndexByTab.get(tab?.id);
-  const selectedRow = Number.isInteger(selectedRowIndex) ? payload?.rows?.[selectedRowIndex] : null;
+  const anchorRowIndex = state.anchorRowByTab.get(tab?.id);
+  const selectedRow = Number.isInteger(anchorRowIndex) ? payload?.rows?.[anchorRowIndex] : null;
 
   if (!tab || !payload || !connection) {
     return;
@@ -1082,23 +1582,35 @@ elements.themeToggleButton.addEventListener('click', () => {
 });
 
 elements.newConnectionButton.addEventListener('click', () => {
-  if (elements.connectionForm.hidden) {
-    openConnectionForm('mariadb');
-  } else {
-    elements.connectionForm.hidden = true;
-  }
+  openConnectionForm('mariadb');
 });
 
 elements.cancelConnectionButton.addEventListener('click', () => {
-  elements.connectionForm.hidden = true;
+  closeConnectionForm();
 });
 
 elements.saveConnectionButton.addEventListener('click', () => {
   saveConnection(getConnectionFromForm());
 });
 
+elements.connectionFormCloseButton.addEventListener('click', closeConnectionForm);
+elements.connectionFormBackdrop.addEventListener('click', closeConnectionForm);
+elements.connectionForm.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeConnectionForm();
+  }
+});
+
 elements.connectionTypeSelect.addEventListener('change', () => {
   setConnectionFormType(elements.connectionTypeSelect.value);
+});
+
+elements.mariaConnectionModeSelect.addEventListener('change', () => {
+  setConnectionFormType(elements.connectionTypeSelect.value);
+  if (elements.mariaConnectionModeSelect.value === 'ssh') {
+    elements.mariaSshHostInput.focus();
+  }
 });
 
 elements.sidebarNav.addEventListener('click', (event) => {
@@ -1116,10 +1628,31 @@ elements.sidebarNav.addEventListener('click', (event) => {
 });
 
 elements.connectionsList.addEventListener('click', async (event) => {
+  const disconnectButton = event.target.closest('[data-disconnect-connection-id]');
+  const colorToggle = event.target.closest('[data-toggle-color-menu-id]');
+  const colorButton = event.target.closest('[data-connection-color-id][data-color]');
   const connectionButton = event.target.closest('[data-connection-id]');
   const tableButton = event.target.closest('[data-table-name]');
   const removeButton = event.target.closest('[data-remove-connection-id]');
   const editButton = event.target.closest('[data-edit-connection-id]');
+
+  if (disconnectButton) {
+    await disconnectConnection(disconnectButton.dataset.disconnectConnectionId);
+    return;
+  }
+
+  if (colorToggle) {
+    const connectionId = colorToggle.dataset.toggleColorMenuId;
+    state.openColorConnectionId = state.openColorConnectionId === connectionId ? null : connectionId;
+    renderConnections();
+    return;
+  }
+
+  if (colorButton) {
+    state.openColorConnectionId = null;
+    await updateConnectionBackground(colorButton.dataset.connectionColorId, colorButton.dataset.color);
+    return;
+  }
 
   if (removeButton) {
     const conn = state.connections.find((c) => c.id === removeButton.dataset.removeConnectionId);
@@ -1144,13 +1677,80 @@ elements.connectionsList.addEventListener('click', async (event) => {
   }
 
   if (connectionButton) {
-    state.activeConnectionId = connectionButton.dataset.connectionId;
+    const connection = state.connections.find((item) => item.id === connectionButton.dataset.connectionId);
+    if (!connection) return;
+    state.activeConnectionId = connection.id;
+    if (connection.type === 'ssh') {
+      await openSshConnection(connection);
+      return;
+    }
     state.sidebarView = 'tables';
     if (!state.schemaByConnection.has(state.activeConnectionId)) {
       await loadSchemaForActiveConnection();
     }
     render();
   }
+});
+
+elements.connectionsList.addEventListener('keydown', async (event) => {
+  const groupNameInput = event.target.closest('[data-group-name-id]');
+  if (!groupNameInput || event.key !== 'Enter') return;
+
+  event.preventDefault();
+  await updateConnectionGroupName(groupNameInput.dataset.groupNameId, groupNameInput.value);
+  groupNameInput.blur();
+});
+
+function clearConnectionDropTargets() {
+  elements.connectionsList.querySelectorAll('.connection-item.drop-target').forEach((item) => {
+    item.classList.remove('drop-target');
+  });
+}
+
+elements.connectionsList.addEventListener('dragstart', (event) => {
+  if (event.target.closest('.connection-actions')) return;
+
+  const item = event.target.closest('[data-connection-card-id]');
+  if (!item) return;
+
+  state.draggingConnectionId = item.dataset.connectionCardId;
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', state.draggingConnectionId);
+  item.classList.add('dragging');
+});
+
+elements.connectionsList.addEventListener('dragover', (event) => {
+  const item = event.target.closest('[data-connection-card-id]');
+  if (!item || item.dataset.connectionCardId === state.draggingConnectionId) return;
+
+  event.preventDefault();
+  clearConnectionDropTargets();
+  item.classList.add('drop-target');
+});
+
+elements.connectionsList.addEventListener('dragleave', (event) => {
+  const item = event.target.closest('[data-connection-card-id]');
+  if (item && !item.contains(event.relatedTarget)) {
+    item.classList.remove('drop-target');
+  }
+});
+
+elements.connectionsList.addEventListener('drop', async (event) => {
+  const item = event.target.closest('[data-connection-card-id]');
+  const sourceConnectionId = event.dataTransfer.getData('text/plain') || state.draggingConnectionId;
+
+  clearConnectionDropTargets();
+
+  if (!item || !sourceConnectionId) return;
+  event.preventDefault();
+  await groupConnections(sourceConnectionId, item.dataset.connectionCardId);
+});
+
+elements.connectionsList.addEventListener('dragend', () => {
+  const item = elements.connectionsList.querySelector('.connection-item.dragging');
+  item?.classList.remove('dragging');
+  clearConnectionDropTargets();
+  state.draggingConnectionId = null;
 });
 
 elements.tabsBar.addEventListener('click', (event) => {
@@ -1167,7 +1767,10 @@ elements.tabsBar.addEventListener('click', (event) => {
     state.activeTabId = tabButton.dataset.tabId;
     state.mode = 'data';
     render();
-    loadActiveTable();
+    const tab = getActiveTab();
+    if (tab?.type !== 'ssh') {
+      loadActiveTable();
+    }
   }
 });
 
@@ -1246,13 +1849,47 @@ elements.filterValueToDateBtn.addEventListener('click', () => {
 
 elements.limitInput.addEventListener('change', loadActiveTable);
 
-function selectRow(tab, rowIndex) {
-  state.selectedRowIndexByTab.set(tab.id, rowIndex);
+function selectRow(tab, rowIndex, event = null) {
+  const existing = state.selectedRowsByTab.get(tab.id) || new Set();
+
+  if (event?.shiftKey && state.anchorRowByTab.has(tab.id)) {
+    const anchor = state.anchorRowByTab.get(tab.id);
+    const allRowEls = [...elements.dataTable.querySelectorAll('tbody tr[data-row-index]')];
+    const anchorPos = allRowEls.findIndex((tr) => Number(tr.dataset.rowIndex) === anchor);
+    const targetPos = allRowEls.findIndex((tr) => Number(tr.dataset.rowIndex) === rowIndex);
+    if (anchorPos !== -1 && targetPos !== -1) {
+      const lo = Math.min(anchorPos, targetPos);
+      const hi = Math.max(anchorPos, targetPos);
+      const newSet = new Set();
+      for (let i = lo; i <= hi; i++) newSet.add(Number(allRowEls[i].dataset.rowIndex));
+      state.selectedRowsByTab.set(tab.id, newSet);
+    } else {
+      state.selectedRowsByTab.set(tab.id, new Set([rowIndex]));
+      state.anchorRowByTab.set(tab.id, rowIndex);
+    }
+  } else if (event?.metaKey || event?.ctrlKey) {
+    if (existing.has(rowIndex)) existing.delete(rowIndex);
+    else existing.add(rowIndex);
+    state.selectedRowsByTab.set(tab.id, existing);
+    state.anchorRowByTab.set(tab.id, rowIndex);
+  } else {
+    state.selectedRowsByTab.set(tab.id, new Set([rowIndex]));
+    state.anchorRowByTab.set(tab.id, rowIndex);
+  }
+
   state.relationLookupByTab.delete(tab.id);
-  elements.dataTable.querySelector('.selected-row')?.classList.remove('selected-row');
-  const rowEl = elements.dataTable.querySelector(`tr[data-row-index="${rowIndex}"]`);
-  rowEl?.classList.add('selected-row');
-  rowEl?.scrollIntoView({ block: 'nearest' });
+
+  for (const el of elements.dataTable.querySelectorAll('.selected-row')) {
+    el.classList.remove('selected-row');
+  }
+  const currentSelected = state.selectedRowsByTab.get(tab.id);
+  for (const idx of currentSelected) {
+    elements.dataTable.querySelector(`tr[data-row-index="${idx}"]`)?.classList.add('selected-row');
+  }
+
+  const anchor = state.anchorRowByTab.get(tab.id);
+  elements.dataTable.querySelector(`tr[data-row-index="${anchor}"]`)?.scrollIntoView({ block: 'nearest' });
+
   const payload = state.tablePayloadByTab.get(tab.id);
   if (payload) renderRelations(payload);
 }
@@ -1283,7 +1920,7 @@ window.addEventListener('keydown', (e) => {
   if (!tab || !payload) return;
 
   const rows = payload.rows || [];
-  const cur = state.selectedRowIndexByTab.get(tab.id) ?? -1;
+  const cur = state.anchorRowByTab.get(tab.id) ?? -1;
 
   if (isArrow) {
     if (!rows.length) return;
@@ -1293,17 +1930,25 @@ window.addEventListener('keydown', (e) => {
       : Math.max(cur - 1, 0);
     selectRow(tab, next);
   } else if (isCopy) {
-    if (cur < 0 || cur >= rows.length) return;
+    const selectedRows = state.selectedRowsByTab.get(tab.id);
+    if (!selectedRows?.size) return;
     const pkCols = new Set(payload.columns.filter((col) => Number(col.pk)).map((col) => col.name));
-    state.copiedRow = Object.fromEntries(
-      payload.columns.filter((col) => !pkCols.has(col.name)).map((col) => [col.name, rows[cur][col.name] ?? ''])
-    );
+    const nonPkCols = payload.columns.filter((col) => !pkCols.has(col.name));
+    state.copiedRows = [...selectedRows]
+      .filter((idx) => idx >= 0 && idx < rows.length)
+      .sort((a, b) => a - b)
+      .map((idx) => Object.fromEntries(nonPkCols.map((col) => [col.name, rows[idx][col.name] ?? ''])));
+    if (!state.copiedRows.length) return;
     e.preventDefault();
-    showToast('Rij gekopieerd');
+    showToast(state.copiedRows.length === 1 ? 'Rij gekopieerd' : `${state.copiedRows.length} rijen gekopieerd`);
   } else if (isPaste) {
-    if (!state.copiedRow) return;
+    if (!state.copiedRows?.length) return;
+    const pasteConnection = state.connections.find((c) => c.id === tab.connectionId);
+    if (pasteConnection?.readOnly) return;
     e.preventDefault();
-    addPendingRow(tab, payload, state.copiedRow);
+    for (const row of state.copiedRows) {
+      addPendingRow(tab, payload, row);
+    }
   }
 });
 
@@ -1320,19 +1965,38 @@ elements.dataTable.addEventListener('click', async (event) => {
     return;
   }
 
+  const sortHeader = event.target.closest('th[data-sort-col]');
+  if (sortHeader) {
+    const col = sortHeader.dataset.sortCol;
+    const cur = state.sortByTab.get(tab.id);
+    if (cur?.column === col) {
+      if (cur.direction === 'asc') state.sortByTab.set(tab.id, { column: col, direction: 'desc' });
+      else state.sortByTab.delete(tab.id);
+    } else {
+      state.sortByTab.set(tab.id, { column: col, direction: 'asc' });
+    }
+    const payload = state.tablePayloadByTab.get(tab.id);
+    if (payload) renderDataTable(payload);
+    return;
+  }
+
   const relationValueButton = event.target.closest('[data-relation-kind]');
   const row = event.target.closest('[data-row-index]');
 
   if (!row) return;
 
-  selectRow(tab, Number(row.dataset.rowIndex));
+  selectRow(tab, Number(row.dataset.rowIndex), event);
 
-  if (relationValueButton) {
+  if (relationValueButton && event.detail < 2) {
     await loadRelationLookup(
       relationValueButton.dataset.relationKind,
       Number(relationValueButton.dataset.relationIndex)
     );
   }
+});
+
+elements.dataTable.addEventListener('mousedown', (e) => {
+  if (e.shiftKey && e.target.closest('tbody tr[data-row-index]')) e.preventDefault();
 });
 
 elements.addRowButton.addEventListener('click', () => {
@@ -1352,15 +2016,56 @@ elements.discardRowsButton.addEventListener('click', () => {
   renderTableView();
 });
 
+elements.sshTerminalForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const tab = getActiveTab();
+  const sessionId = getActiveSshSessionId();
+  const command = elements.sshTerminalInput.value;
+  if (!tab || !sessionId || !command) return;
+
+  state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}$ ${command}\n`);
+  elements.sshTerminalInput.value = '';
+  renderSshView();
+  await window.sqlBase.writeSsh({ sessionId, data: `${command}\n` });
+});
+
+elements.sshOpenTerminalButton.addEventListener('click', async () => {
+  const tab = getActiveTab();
+  const connection = state.connections.find((item) => item.id === tab?.connectionId);
+  if (!tab || tab.type !== 'ssh' || !connection) return;
+
+  try {
+    await window.sqlBase.openSshInTerminal(connection);
+    state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}\nGeopend in macOS Terminal. Voor password-auth vraagt Terminal zelf om je wachtwoord.\n`);
+    renderSshView();
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+elements.sshDisconnectButton.addEventListener('click', async () => {
+  const tab = getActiveTab();
+  const sessionId = getActiveSshSessionId();
+  if (!tab || !sessionId) return;
+
+  await window.sqlBase.stopSsh(sessionId);
+  state.sshSessionByTab.delete(tab.id);
+  state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}\nVerbinding verbroken.\n`);
+  renderSshView();
+});
+
 elements.dataTable.addEventListener('dblclick', (event) => {
   const td = event.target.closest('td');
   const row = td?.closest('tr[data-row-index]');
-  if (!td || !row || td.classList.contains('relation-cell')) return;
+  if (!td || !row) return;
   if (td.querySelector('input[data-edit-input]')) return;
 
   const tab = getActiveTab();
   const payload = state.tablePayloadByTab.get(tab?.id);
   if (!tab || !payload || state.mode !== 'data') return;
+
+  const activeConnection = state.connections.find((c) => c.id === tab.connectionId);
+  if (activeConnection?.readOnly) return;
 
   const rowIndex = Number(row.dataset.rowIndex);
   const colIndex = [...row.children].indexOf(td);
@@ -1450,6 +2155,92 @@ window.sqlBase.onConnectionFileSelected((payload) => {
 
 window.sqlBase.onNewMariaDbConnection(() => {
   openConnectionForm('mariadb');
+});
+
+window.sqlBase.onNewSshConnection(() => {
+  openConnectionForm('ssh');
+});
+
+window.sqlBase.onSshData(({ sessionId, data }) => {
+  appendSshOutput(sessionId, data);
+});
+
+window.sqlBase.onSshExit(({ sessionId, code }) => {
+  const tab = state.tabs.find((item) => state.sshSessionByTab.get(item.id) === sessionId);
+  if (!tab) return;
+
+  state.sshSessionByTab.delete(tab.id);
+  const statusText = code
+    ? `[SSH niet gelukt, exit-code ${code}]`
+    : '[SSH sessie afgesloten]';
+  state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}\n${statusText}\n`);
+  if (state.activeTabId === tab.id) {
+    renderSshView();
+  }
+});
+
+function openSqlDialog() {
+  const tab = getActiveTab();
+  const connection = state.connections.find((c) => c.id === tab?.connectionId);
+  if (!tab || !connection) return;
+  elements.sqlDialogTitle.textContent = `${connection.name} · ${tab.tableName}`;
+  elements.sqlResult.hidden = true;
+  elements.sqlResult.innerHTML = '';
+  elements.sqlDialog.hidden = false;
+  elements.sqlBackdrop.hidden = false;
+  elements.sqlTextarea.focus();
+}
+
+function closeSqlDialog() {
+  elements.sqlDialog.hidden = true;
+  elements.sqlBackdrop.hidden = true;
+}
+
+async function executeSql() {
+  const tab = getActiveTab();
+  const connection = state.connections.find((c) => c.id === tab?.connectionId);
+  if (!tab || !connection) return;
+  const sql = elements.sqlTextarea.value.trim();
+  if (!sql) return;
+
+  elements.sqlRunButton.disabled = true;
+  elements.sqlResult.hidden = false;
+  elements.sqlResult.innerHTML = '<p class="sql-result-meta">Laden...</p>';
+
+  try {
+    const result = await window.sqlBase.runSql({ connection, sql });
+    if (result.rows.length > 0) {
+      const cols = Object.keys(result.rows[0]);
+      elements.sqlResult.innerHTML = `
+        <div class="table-scroll">
+          <table>
+            <thead><tr>${cols.map((c) => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
+            <tbody>${result.rows.map((row) => `
+              <tr>${cols.map((c) => `<td title="${escapeHtml(formatPlainValue(row[c]))}">${formatValue(row[c])}</td>`).join('')}</tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+        <p class="sql-result-meta">${result.rows.length} rij${result.rows.length !== 1 ? 'en' : ''} teruggegeven</p>
+      `;
+    } else if (result.affectedRows !== null) {
+      elements.sqlResult.innerHTML = `<p class="sql-result-meta">${result.affectedRows} rij${result.affectedRows !== 1 ? 'en' : ''} beïnvloed</p>`;
+    } else {
+      elements.sqlResult.innerHTML = '<p class="sql-result-meta">Query uitgevoerd.</p>';
+    }
+  } catch (error) {
+    elements.sqlResult.innerHTML = `<p class="sql-result-error">${escapeHtml(error.message)}</p>`;
+  } finally {
+    elements.sqlRunButton.disabled = false;
+  }
+}
+
+elements.sqlButton.addEventListener('click', openSqlDialog);
+elements.sqlBackdrop.addEventListener('click', closeSqlDialog);
+elements.sqlDialogClose.addEventListener('click', closeSqlDialog);
+elements.sqlRunButton.addEventListener('click', executeSql);
+elements.sqlTextarea.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); executeSql(); }
+  if (e.key === 'Escape') { e.preventDefault(); closeSqlDialog(); }
 });
 
 setConnectionFormType('mariadb');

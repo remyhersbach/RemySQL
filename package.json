@@ -1,7 +1,7 @@
 {
   "name": "remysql",
   "productName": "RemySQL",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "Een kleine Electron database-manager voor MariaDB en SQLite met tabs, filters en relatiesidebar.",
   "main": "src/main.js",
   "scripts": {
@@ -9,7 +9,33 @@
     "dev": "electron .",
     "postinstall": "node scripts/patch-electron-dev.js",
     "create:sample": "node scripts/create-sample-db.js",
-    "icon": "electron scripts/render-icon.js"
+    "icon": "electron scripts/render-icon.js",
+    "icon:dock": "electron scripts/render-icon-dock.js",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.remyhersbach.remysql",
+    "copyright": "© 2025 Remy Hersbach",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/icon.png",
+      "assets/icon-dock.png",
+      "assets/logo.png"
+    ],
+    "mac": {
+      "icon": "assets/icon-dock.png",
+      "category": "public.app-category.developer-tools",
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] }
+      ]
+    },
+    "dmg": {
+      "title": "${productName} ${version}"
+    }
   },
   "keywords": [
     "electron",
@@ -19,10 +45,11 @@
     "database",
     "manager"
   ],
-  "author": "",
+  "author": "Remy Hersbach",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^30.5.1"
+    "electron": "^30.5.1",
+    "electron-builder": "^26.8.1"
   },
   "dependencies": {
     "mariadb": "^3.5.2"
