@@ -1,7 +1,7 @@
 {
   "name": "remysql",
   "productName": "RemySQL",
-  "version": "0.1.5",
+  "version": "0.1.8",
   "description": "Een kleine Electron database-manager voor MariaDB en SQLite met tabs, filters en relatiesidebar.",
   "main": "src/main.js",
   "scripts": {
@@ -30,7 +30,13 @@
       "icon": "assets/icon-dock.png",
       "category": "public.app-category.developer-tools",
       "target": [
-        { "target": "dmg", "arch": ["arm64", "x64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ]
     },
     "dmg": {

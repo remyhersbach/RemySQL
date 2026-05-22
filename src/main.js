@@ -421,6 +421,132 @@ async function runMariaDb(connection, sql, values = []) {
   }
 }
 
+function runSqliteText(databasePath, args) {
+  return new Promise((resolve, reject) => {
+    execFile('sqlite3', [databasePath, ...args], { maxBuffer: 1024 * 1024 * 100 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(stderr || error.message));
+        return;
+      }
+
+      resolve(stdout);
+    });
+  });
+}
+
+function getTimestampSlug() {
+  return new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '');
+}
+
+function getSafeFilename(value) {
+  return String(value || 'database')
+    .trim()
+    .replace(/[^\w.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'database';
+}
+
+function quoteSqliteDotArgument(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function quoteDumpString(value) {
+  if (value === null || value === undefined) {
+    return 'NULL';
+  }
+
+  return `'${String(value)
+    .replaceAll('\\', '\\\\')
+    .replaceAll("'", "''")
+    .replaceAll('\0', '\\0')}'`;
+}
+
+function getMariaDumpValue(value) {
+  return quoteDumpString(value);
+}
+
+async function getSqliteTableDump(connection, tableName) {
+  return runSqliteText(resolveHomePath(connection.path), [`.dump ${quoteSqliteDotArgument(tableName)}`]);
+}
+
+async function getMariaCreateStatement(connection, table) {
+  const rows = await runMariaDb(connection, `SHOW CREATE ${table.type === 'view' ? 'VIEW' : 'TABLE'} ${quoteMariaIdentifier(table.name)};`);
+  const row = rows[0] || {};
+  return row['Create Table'] || row['Create View'] || row[`Create ${table.type === 'view' ? 'View' : 'Table'}`] || '';
+}
+
+async function getMariaTableDump(connection, tableName) {
+  const tables = await getMariaTables(connection);
+  const table = tables.find((item) => item.name === tableName);
+  if (!table) {
+    throw new Error('Tabel niet gevonden.');
+  }
+
+  const lines = [
+    `-- RemySQL tabelbackup voor ${connection.database}.${tableName}`,
+    `-- Gemaakt op ${new Date().toISOString()}`,
+    'SET FOREIGN_KEY_CHECKS=0;',
+    ''
+  ];
+
+  const createStatement = await getMariaCreateStatement(connection, table);
+  if (table.type === 'view') {
+    lines.push(`DROP VIEW IF EXISTS ${quoteMariaIdentifier(table.name)};`);
+    if (createStatement) {
+      lines.push(`${createStatement};`);
+    }
+  } else {
+    lines.push(`DROP TABLE IF EXISTS ${quoteMariaIdentifier(table.name)};`);
+    if (createStatement) {
+      lines.push(`${createStatement};`);
+    }
+
+    const rows = await runMariaDb(connection, `SELECT * FROM ${quoteMariaIdentifier(table.name)};`);
+    if (rows.length) {
+      const columns = Object.keys(rows[0]);
+      const columnSql = columns.map(quoteMariaIdentifier).join(', ');
+      const batchSize = 100;
+      for (let i = 0; i < rows.length; i += batchSize) {
+        const valuesSql = rows.slice(i, i + batchSize)
+          .map((row) => `(${columns.map((column) => getMariaDumpValue(row[column])).join(', ')})`)
+          .join(',\n');
+        lines.push(`INSERT INTO ${quoteMariaIdentifier(table.name)} (${columnSql}) VALUES\n${valuesSql};`);
+      }
+    }
+  }
+
+  lines.push('');
+  lines.push('SET FOREIGN_KEY_CHECKS=1;');
+  return `${lines.join('\n')}\n`;
+}
+
+async function getTableDump(connection, tableName) {
+  return connection.type === 'mariadb'
+    ? getMariaTableDump(connection, tableName)
+    : getSqliteTableDump(connection, tableName);
+}
+
+async function saveTableDump(connection, tableName) {
+  const databaseName = connection.type === 'mariadb' ? connection.database : connection.name;
+  const safeName = getSafeFilename(`${databaseName}-${tableName}`);
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Tabelbackup maken',
+    defaultPath: `${safeName}-table-backup-${getTimestampSlug()}.sql`,
+    filters: [
+      { name: 'SQL tabelbackup', extensions: ['sql'] },
+      { name: 'Alle bestanden', extensions: ['*'] }
+    ]
+  });
+
+  if (result.canceled || !result.filePath) {
+    return { canceled: true };
+  }
+
+  const sql = await getTableDump(connection, tableName);
+  writeFileSync(result.filePath, sql, 'utf8');
+  return { canceled: false, filePath: result.filePath };
+}
+
 async function getSqliteTables(databasePath) {
   return runSqlite(
     databasePath,
@@ -871,6 +997,20 @@ function sameConnection(left, right) {
     ));
 }
 
+function getDuplicateConnectionName(connections, baseName) {
+  const base = String(baseName || 'Connectie').trim() || 'Connectie';
+  const usedNames = new Set(connections.map((connection) => connection.name));
+  let copyName = `${base} kopie`;
+  let counter = 2;
+
+  while (usedNames.has(copyName)) {
+    copyName = `${base} kopie ${counter}`;
+    counter += 1;
+  }
+
+  return copyName;
+}
+
 function createWindow() {
   const iconPath = path.join(__dirname, '..', 'assets', 'icon.png');
   mainWindow = new BrowserWindow({
@@ -920,6 +1060,7 @@ async function openConnectionDialog() {
 function createMenu() {
   const template = [
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    { role: 'editMenu' },
     {
       label: 'Connecties',
       submenu: [
@@ -978,6 +1119,26 @@ ipcMain.handle('connections:remove', (_event, connectionId) => {
   const nextConnections = readConnections().filter((connection) => connection.id !== connectionId);
   writeConnections(nextConnections);
   return nextConnections;
+});
+
+ipcMain.handle('connections:duplicate', async (_event, connectionId) => {
+  const connections = readConnections();
+  const source = connections.find((connection) => connection.id === connectionId);
+  if (!source) {
+    throw new Error('Connectie niet gevonden.');
+  }
+
+  const duplicate = {
+    ...source,
+    id: randomUUID(),
+    name: getDuplicateConnectionName(connections, source.name),
+    createdAt: new Date().toISOString()
+  };
+  const tables = duplicate.type === 'ssh' ? [] : await getTables(duplicate);
+  const nextConnections = [duplicate, ...connections];
+  writeConnections(nextConnections);
+
+  return { connection: duplicate, tables };
 });
 
 ipcMain.handle('connections:update-background', (_event, { connectionId, backgroundColor }) => {
@@ -1226,6 +1387,14 @@ ipcMain.handle('database:run-sql', async (_event, { connection, sql }) => {
   } finally {
     if (handle) await handle.cleanup();
   }
+});
+
+ipcMain.handle('database:backup-table', async (_event, { connection, tableName }) => {
+  if (!tableName) {
+    throw new Error('Geen tabel gekozen.');
+  }
+
+  return saveTableDump(connection, tableName);
 });
 
 app.whenReady().then(() => {

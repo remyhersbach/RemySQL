@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('sqlBase', {
   listConnections: () => ipcRenderer.invoke('connections:list'),
   addConnection: (connection) => ipcRenderer.invoke('connections:add', connection),
   removeConnection: (connectionId) => ipcRenderer.invoke('connections:remove', connectionId),
+  duplicateConnection: (connectionId) => ipcRenderer.invoke('connections:duplicate', connectionId),
   updateConnectionBackground: (payload) => ipcRenderer.invoke('connections:update-background', payload),
   groupConnections: (payload) => ipcRenderer.invoke('connections:group', payload),
   updateConnectionGroupName: (payload) => ipcRenderer.invoke('connections:update-group-name', payload),
@@ -17,6 +18,7 @@ contextBridge.exposeInMainWorld('sqlBase', {
   insertRows: (payload) => ipcRenderer.invoke('database:insert-rows', payload),
   updateRows: (payload) => ipcRenderer.invoke('database:update-rows', payload),
   runSql: (payload) => ipcRenderer.invoke('database:run-sql', payload),
+  backupTable: (payload) => ipcRenderer.invoke('database:backup-table', payload),
   onNewMariaDbConnection: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('connection:new-mariadb', listener);

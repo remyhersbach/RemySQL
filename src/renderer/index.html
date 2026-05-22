@@ -28,6 +28,12 @@
         </header>
 
         <div id="sidebarNav" class="sidebar-nav"></div>
+        <div id="sidebarFilterWrap" class="sidebar-filter-wrap" hidden>
+          <input id="sidebarFilterInput" type="text" class="sidebar-filter-input" placeholder="Zoek tabel…" autocomplete="off" spellcheck="false" />
+          <button id="sidebarFilterClear" class="sidebar-filter-clear" type="button" tabindex="-1" aria-label="Filter wissen" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="10" height="10" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
         <div id="connectionsList" class="connections-list"></div>
       </aside>
 
@@ -42,6 +48,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="11" height="11" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
               Alleen lezen
             </span>
+            <button id="backupButton" class="ghost-button" disabled>Backup tabel</button>
             <button id="refreshButton" class="ghost-button" disabled>Ververs</button>
           </div>
         </div>
@@ -278,6 +285,18 @@
         <span class="muted-note">⌘↵ uitvoeren · Esc sluiten</span>
       </div>
       <div id="sqlResult" class="sql-result" hidden></div>
+    </div>
+
+    <div id="errorDialogBackdrop" class="error-dialog-backdrop" hidden></div>
+    <div id="errorDialog" class="error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="errorDialogTitle" hidden>
+      <div class="error-dialog-header">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <h3 id="errorDialogTitle">Fout</h3>
+      </div>
+      <p id="errorDialogMessage" class="error-dialog-message"></p>
+      <div class="error-dialog-actions">
+        <button id="errorDialogClose" class="primary-button">OK</button>
+      </div>
     </div>
 
     <div id="toast" class="toast" hidden></div>

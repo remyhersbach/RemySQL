@@ -21,9 +21,11 @@ const state = {
   draggingConnectionId: null,
   focusGroupId: null,
   openColorConnectionId: null,
+  contextMenuConnectionId: null,
   sshSessionByTab: new Map(),
   sshOutputByTab: new Map(),
-  sortByTab: new Map()
+  sortByTab: new Map(),
+  sidebarFilterOpen: false
 };
 
 const connectionColorOptions = [
@@ -73,6 +75,7 @@ const elements = {
   connectionsList: document.querySelector('#connectionsList'),
   activeConnectionLabel: document.querySelector('#activeConnectionLabel'),
   workspaceTitle: document.querySelector('#workspaceTitle'),
+  backupButton: document.querySelector('#backupButton'),
   refreshButton: document.querySelector('#refreshButton'),
   tabsBar: document.querySelector('#tabsBar'),
   emptyState: document.querySelector('#emptyState'),
@@ -123,8 +126,171 @@ const elements = {
   sqlResult: document.querySelector('#sqlResult'),
   readOnlyBadge: document.querySelector('#readOnlyBadge'),
   connectionReadOnlyRow: document.querySelector('#connectionReadOnlyRow'),
-  connectionReadOnlyCheckbox: document.querySelector('#connectionReadOnlyCheckbox')
+  connectionReadOnlyCheckbox: document.querySelector('#connectionReadOnlyCheckbox'),
+  sidebarFilterWrap: document.querySelector('#sidebarFilterWrap'),
+  sidebarFilterInput: document.querySelector('#sidebarFilterInput'),
+  sidebarFilterClear: document.querySelector('#sidebarFilterClear'),
+  errorDialog: document.querySelector('#errorDialog'),
+  errorDialogBackdrop: document.querySelector('#errorDialogBackdrop'),
+  errorDialogClose: document.querySelector('#errorDialogClose'),
+  errorDialogMessage: document.querySelector('#errorDialogMessage')
 };
+
+// ── FK picker ────────────────────────────────────────────────────────────────
+const fkDropdown = document.createElement('div');
+fkDropdown.className = 'fk-picker-dropdown';
+fkDropdown.hidden = true;
+document.body.appendChild(fkDropdown);
+
+const fkMoreTooltip = document.createElement('div');
+fkMoreTooltip.className = 'fk-more-tooltip';
+fkMoreTooltip.hidden = true;
+document.body.appendChild(fkMoreTooltip);
+
+let activeFkBtn = null;
+let activeFkInput = null;
+
+function closeFkDropdown() {
+  fkDropdown.hidden = true;
+  fkMoreTooltip.hidden = true;
+  activeFkBtn = null;
+  activeFkInput = null;
+}
+
+async function populateFkDropdown(tableName, fkColumn) {
+  const tab = getActiveTab();
+  const connection = state.connections.find((item) => item.id === tab?.connectionId);
+  if (!connection) return;
+
+  fkDropdown.innerHTML = '<div class="fk-status">Laden…</div>';
+
+  let rows, cols;
+  try {
+    const result = await window.sqlBase.loadTable({ connection, tableName, limit: 500 });
+    rows = result.rows || [];
+    cols = result.columns || [];
+  } catch (err) {
+    fkDropdown.innerHTML = `<div class="fk-status fk-status-error">Fout: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  const PREVIEW = 4;
+  const optionsHtml = rows.length
+    ? rows.map((row) => {
+        const fkVal = formatPlainValue(row[fkColumn]);
+        const searchText = cols.map((c) => formatPlainValue(row[c.name])).join(' ').toLowerCase();
+        const previewCols = cols.slice(0, PREVIEW);
+        const moreCols = cols.slice(PREVIEW);
+
+        const chips = previewCols.map((col) => {
+          const val = formatPlainValue(row[col.name]);
+          const short = val.length > 22 ? val.slice(0, 22) + '…' : val;
+          return `<span class="fk-chip"><span class="fk-chip-key">${escapeHtml(col.name)}</span><span class="fk-chip-val">${escapeHtml(short)}</span></span>`;
+        }).join('');
+
+        const tipHtml = moreCols.map((col) => {
+          const val = formatPlainValue(row[col.name]);
+          return `<div class="fk-tip-row"><span class="fk-tip-key">${escapeHtml(col.name)}</span><span class="fk-tip-val">${escapeHtml(val)}</span></div>`;
+        }).join('');
+
+        return `
+          <div class="fk-option" data-value="${escapeHtml(fkVal)}" data-search="${escapeHtml(searchText)}" tabindex="0">
+            <div class="fk-option-body">
+              <div class="fk-option-chips">${chips}</div>
+              ${moreCols.length ? `
+                <div class="fk-option-more">
+                  <span class="fk-more-badge" data-tip="${escapeHtml(tipHtml)}">+${moreCols.length}</span>
+                </div>` : ''}
+            </div>
+          </div>`;
+      }).join('')
+    : '<div class="fk-status">Geen rijen gevonden.</div>';
+
+  fkDropdown.innerHTML = `
+    <div class="fk-search-wrap">
+      <input class="fk-search" type="text" placeholder="Zoeken in ${escapeHtml(tableName)}…" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="fk-options-list">${optionsHtml}</div>`;
+
+  const searchEl = fkDropdown.querySelector('.fk-search');
+  const listEl = fkDropdown.querySelector('.fk-options-list');
+
+  searchEl?.addEventListener('input', () => {
+    const q = searchEl.value.trim().toLowerCase();
+    for (const opt of listEl.querySelectorAll('.fk-option')) {
+      opt.hidden = Boolean(q && !opt.dataset.search.includes(q));
+    }
+  });
+
+  searchEl?.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      listEl.querySelector('.fk-option:not([hidden])')?.focus();
+    } else if (e.key === 'Escape') {
+      closeFkDropdown();
+      activeFkInput?.focus();
+    } else if (e.key === 'Enter') {
+      const visible = listEl.querySelectorAll('.fk-option:not([hidden])');
+      if (visible.length === 1 && activeFkInput) {
+        activeFkInput.value = visible[0].dataset.value;
+        closeFkDropdown();
+      }
+    }
+  });
+
+  listEl?.addEventListener('keydown', (e) => {
+    const opts = [...listEl.querySelectorAll('.fk-option:not([hidden])')];
+    const idx = opts.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      opts[Math.min(idx + 1, opts.length - 1)]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (idx <= 0) searchEl?.focus();
+      else opts[idx - 1]?.focus();
+    } else if (e.key === 'Enter' && document.activeElement?.classList.contains('fk-option') && activeFkInput) {
+      activeFkInput.value = document.activeElement.dataset.value;
+      closeFkDropdown();
+    } else if (e.key === 'Escape') {
+      closeFkDropdown();
+      activeFkInput?.focus();
+    }
+  });
+
+  setTimeout(() => searchEl?.focus(), 0);
+}
+
+fkDropdown.addEventListener('click', (e) => {
+  const opt = e.target.closest('.fk-option[data-value]');
+  if (opt && activeFkInput) {
+    activeFkInput.value = opt.dataset.value;
+    closeFkDropdown();
+  }
+});
+
+fkDropdown.addEventListener('mouseover', (e) => {
+  const badge = e.target.closest('.fk-more-badge[data-tip]');
+  if (!badge) return;
+  fkMoreTooltip.innerHTML = badge.dataset.tip;
+  fkMoreTooltip.hidden = false;
+  const r = badge.getBoundingClientRect();
+  const ttWidth = 260;
+  const left = r.right + 8 + ttWidth > window.innerWidth ? r.left - ttWidth - 8 : r.right + 8;
+  fkMoreTooltip.style.left = `${left}px`;
+  fkMoreTooltip.style.top = `${r.top - 4}px`;
+});
+
+fkDropdown.addEventListener('mouseout', (e) => {
+  if (!e.relatedTarget?.closest('.fk-more-badge')) {
+    fkMoreTooltip.hidden = true;
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (!fkDropdown.hidden && !fkDropdown.contains(e.target) && !e.target.closest('.fk-picker-btn')) {
+    closeFkDropdown();
+  }
+});
 
 function showToast(message) {
   elements.toast.textContent = message;
@@ -133,6 +299,24 @@ function showToast(message) {
   showToast.timer = setTimeout(() => {
     elements.toast.hidden = true;
   }, 4600);
+}
+
+function cleanErrorMessage(message) {
+  return String(message || '')
+    .replace(/^Error invoking remote method '[^']+': /, '')
+    .replace(/^Error: /, '');
+}
+
+function showErrorDialog(message) {
+  elements.errorDialogMessage.textContent = cleanErrorMessage(message);
+  elements.errorDialog.hidden = false;
+  elements.errorDialogBackdrop.hidden = false;
+  elements.errorDialogClose.focus();
+}
+
+function closeErrorDialog() {
+  elements.errorDialog.hidden = true;
+  elements.errorDialogBackdrop.hidden = true;
 }
 
 function getActiveConnection() {
@@ -152,11 +336,53 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function formatValue(value) {
   if (value === null || value === undefined) {
     return '<span class="muted-note">NULL</span>';
   }
   return escapeHtml(value);
+}
+
+function getHighlightTermForColumn(columnName) {
+  if (state.mode !== 'data') {
+    return '';
+  }
+
+  if (state.filterMode === 'column') {
+    const operator = elements.filterOperatorSelect.value;
+    const column = elements.filterColumnSelect.value;
+    return column === columnName && ['=', '!=', 'LIKE'].includes(operator)
+      ? String(state.filterValue || '').trim()
+      : '';
+  }
+
+  return String(elements.filterInput.value || '').trim();
+}
+
+function formatValueWithHighlight(value, columnName) {
+  if (value === null || value === undefined) {
+    return '<span class="muted-note">NULL</span>';
+  }
+
+  const text = String(value);
+  const term = getHighlightTermForColumn(columnName);
+  if (!term) {
+    return escapeHtml(text);
+  }
+
+  const pattern = new RegExp(`(${escapeRegExp(term)})`, 'ig');
+  return text
+    .split(pattern)
+    .map((part) => (
+      part.toLowerCase() === term.toLowerCase()
+        ? `<mark class="search-highlight">${escapeHtml(part)}</mark>`
+        : escapeHtml(part)
+    ))
+    .join('');
 }
 
 function formatPlainValue(value) {
@@ -398,19 +624,25 @@ async function loadConnections() {
   render();
 }
 
-async function loadSchemaForActiveConnection() {
-  const connection = getActiveConnection();
+async function fetchSchemaForConnection(connection) {
   if (!connection) {
-    return;
+    return null;
   }
 
   if (connection.type === 'ssh') {
-    return;
+    return null;
   }
 
+  const schema = await window.sqlBase.loadSchema(connection);
+  state.schemaByConnection.set(connection.id, schema);
+  return schema;
+}
+
+async function loadSchemaForActiveConnection() {
+  const connection = getActiveConnection();
+
   try {
-    const schema = await window.sqlBase.loadSchema(connection);
-    state.schemaByConnection.set(connection.id, schema);
+    await fetchSchemaForConnection(connection);
   } catch (error) {
     showToast(error.message);
   }
@@ -467,6 +699,25 @@ async function removeConnection(connectionId) {
   }
   state.activeTabId = state.tabs[0]?.id || null;
   render();
+}
+
+async function duplicateConnection(connectionId) {
+  try {
+    const result = await window.sqlBase.duplicateConnection(connectionId);
+    state.connections = [
+      result.connection,
+      ...state.connections.filter((item) => item.id !== result.connection.id)
+    ];
+    state.activeConnectionId = result.connection.id;
+    if (result.connection.type !== 'ssh') {
+      state.schemaByConnection.set(result.connection.id, { tables: result.tables });
+    }
+    state.sidebarView = 'connections';
+    render();
+    showToast(`Connectie gedupliceerd: ${result.connection.name}`);
+  } catch (error) {
+    showToast(error.message);
+  }
 }
 
 async function disconnectConnection(connectionId) {
@@ -603,6 +854,7 @@ function renderSshView() {
   elements.tableView.hidden = true;
   elements.sshView.hidden = false;
   elements.refreshButton.disabled = true;
+  elements.backupButton.disabled = true;
   elements.workspaceTitle.textContent = tab.tableName;
   elements.activeConnectionLabel.textContent = connection ? `SSH · ${getConnectionSummary(connection)}` : 'SSH';
   elements.sshTerminalOutput.textContent = state.sshOutputByTab.get(tab.id) || '';
@@ -613,6 +865,7 @@ async function openTable(connection, tableName) {
   const existing = state.tabs.find((tab) => tab.connectionId === connection.id && tab.tableName === tableName);
   if (existing) {
     state.activeTabId = existing.id;
+    state.activeConnectionId = connection.id;
     render();
     return loadActiveTable();
   }
@@ -647,10 +900,10 @@ async function loadActiveTable() {
   const connection = state.connections.find((item) => item.id === tab?.connectionId);
   if (tab?.type === 'ssh') {
     renderSshView();
-    return;
+    return null;
   }
   if (!tab || !connection) {
-    return;
+    return null;
   }
 
   try {
@@ -688,8 +941,10 @@ async function loadActiveTable() {
       }
     }
     renderTableView();
+    return payload;
   } catch (error) {
     showToast(error.message);
+    return null;
   }
 }
 
@@ -905,9 +1160,13 @@ function renderConnections() {
       </div>
     `;
 
+    elements.sidebarFilterWrap.hidden = !state.sidebarFilterOpen;
+
     const tables = schema?.tables || [];
-    elements.connectionsList.innerHTML = tables.length
-      ? tables.map((table) => `
+    const filterQ = elements.sidebarFilterInput.value.toLowerCase().trim();
+    const visibleTables = filterQ ? tables.filter((t) => t.name.toLowerCase().includes(filterQ)) : tables;
+    elements.connectionsList.innerHTML = visibleTables.length
+      ? visibleTables.map((table) => `
           <button class="table-button ${activeTab?.connectionId === connection.id && activeTab?.tableName === table.name ? 'active' : ''}"
                   data-table-name="${escapeHtml(table.name)}"
                   data-table-connection-id="${escapeHtml(connection.id)}">
@@ -917,10 +1176,13 @@ function renderConnections() {
             </span>
           </button>
         `).join('')
-      : '<p class="muted-note">Geen tabellen gevonden.</p>';
+      : `<p class="muted-note">${filterQ ? 'Geen resultaten.' : 'Geen tabellen gevonden.'}</p>`;
 
     elements.connectionsList.dataset.view = 'tables';
   } else {
+    elements.sidebarFilterInput.value = '';
+    elements.sidebarFilterWrap.hidden = true;
+    state.sidebarFilterOpen = false;
     elements.sidebarNav.innerHTML = '<div class="section-title">Connecties</div>';
     elements.connectionsList.innerHTML = '';
     elements.connectionsList.dataset.view = 'connections';
@@ -967,10 +1229,12 @@ function renderConnections() {
           <span class="connection-type-icon ${conn.type === 'ssh' ? 'ssh' : 'database'}" title="${typeLabel}" aria-label="${typeLabel}">
             ${typeIcon}
           </span>
-          <span>
-            <span class="connection-name">${escapeHtml(conn.name)}</span>
+          <span class="connection-details">
+            <span class="connection-title-row">
+              <span class="connection-name">${escapeHtml(conn.name)}</span>
+              ${conn.readOnly ? '<span class="connection-read-only-badge" title="Alleen lezen" aria-label="Alleen lezen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="9" height="9" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>' : ''}
+            </span>
             <span class="connection-path">${escapeHtml(getConnectionSummary(conn))}</span>
-            ${conn.readOnly ? '<span class="connection-read-only-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="9" height="9" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Alleen lezen</span>' : ''}
           </span>
         </button>
         <div class="connection-actions">
@@ -1093,7 +1357,7 @@ function capturePendingInputValues() {
   }
 }
 
-function appendPendingRows(tab, columns) {
+function appendPendingRows(tab, columns, payload) {
   if (!tab) return;
   const pendingRows = state.pendingRowsByTab.get(tab.id) || [];
   if (!pendingRows.length) return;
@@ -1108,12 +1372,38 @@ function appendPendingRows(tab, columns) {
 
     for (const column of columns) {
       const td = document.createElement('td');
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.dataset.col = column.name;
-      input.value = pendingRow.values[column.name] ?? '';
-      input.placeholder = column.name;
-      td.appendChild(input);
+      const fkRel = payload ? getOutgoingRelationByColumn(payload, column.name) : null;
+
+      if (fkRel) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'fk-picker';
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.dataset.col = column.name;
+        input.value = pendingRow.values[column.name] ?? '';
+        input.placeholder = column.name;
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'fk-picker-btn';
+        btn.dataset.fkTable = fkRel.relation.toTable;
+        btn.dataset.fkColumn = fkRel.relation.toColumn;
+        btn.title = `Kies uit ${fkRel.relation.toTable}`;
+        btn.innerHTML = '<svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M5 7L1 3h8L5 7z"/></svg>';
+
+        wrapper.appendChild(input);
+        wrapper.appendChild(btn);
+        td.appendChild(wrapper);
+      } else {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.dataset.col = column.name;
+        input.value = pendingRow.values[column.name] ?? '';
+        input.placeholder = column.name;
+        td.appendChild(input);
+      }
+
       tr.appendChild(td);
     }
 
@@ -1126,17 +1416,8 @@ function appendPendingRows(tab, columns) {
     removeBtn.textContent = '×';
     actionsTd.appendChild(removeBtn);
     tr.appendChild(actionsTd);
+    if (pendingRow.error) tr.classList.add('pending-row-failed');
     tbody.appendChild(tr);
-
-    if (pendingRow.error) {
-      const errorTr = document.createElement('tr');
-      errorTr.className = 'pending-row-error';
-      const errorTd = document.createElement('td');
-      errorTd.colSpan = columns.length + 1;
-      errorTd.innerHTML = `<span class="insert-error">⚠ ${escapeHtml(pendingRow.error)}</span>`;
-      errorTr.appendChild(errorTd);
-      tbody.appendChild(errorTr);
-    }
   }
 }
 
@@ -1181,9 +1462,10 @@ function renderDataTable(payload) {
     }
 
     const relationMatch = getOutgoingRelationByColumn(payload, column.name);
+    const content = formatValueWithHighlight(rawValue, column.name);
 
     if (!relationMatch) {
-      return `<td title="${escapeHtml(formatPlainValue(rawValue))}">${formatValue(rawValue)}</td>`;
+      return `<td title="${escapeHtml(formatPlainValue(rawValue))}">${content}</td>`;
     }
 
     return `
@@ -1195,7 +1477,7 @@ function renderDataTable(payload) {
           data-relation-kind="outgoing"
           data-relation-index="${relationMatch.index}"
         >
-          ${formatValue(rawValue)}
+          ${content}
         </button>
       </td>
     `;
@@ -1226,7 +1508,7 @@ function renderDataTable(payload) {
       }
     </tbody>
   `;
-  appendPendingRows(tab, columns);
+  appendPendingRows(tab, columns, payload);
 }
 
 function renderRelationRows(rows) {
@@ -1351,7 +1633,9 @@ function renderTableView() {
   }
 
   const payload = state.tablePayloadByTab.get(tab?.id);
-  const activeConnection = state.connections.find((connection) => connection.id === tab?.connectionId);
+  const activeConnection = tab
+    ? state.connections.find((connection) => connection.id === tab.connectionId)
+    : getActiveConnection();
   const isReadOnly = Boolean(activeConnection?.readOnly);
   const pendingRows = state.pendingRowsByTab.get(tab?.id) || [];
   const edits = state.editsByTab.get(tab?.id);
@@ -1361,7 +1645,9 @@ function renderTableView() {
   elements.emptyState.hidden = Boolean(tab);
   elements.tableView.hidden = !tab;
   elements.sshView.hidden = true;
-  elements.refreshButton.disabled = !activeConnection;
+  const hasDatabaseConnection = Boolean(activeConnection && activeConnection.type !== 'ssh');
+  elements.refreshButton.disabled = !hasDatabaseConnection;
+  elements.backupButton.disabled = !(tab?.type === 'database' && payload && hasDatabaseConnection);
   elements.tableActions.hidden = !tab || !payload;
   elements.addRowButton.disabled = !isDataMode || isReadOnly;
   elements.sqlButton.disabled = !tab || !payload || isReadOnly;
@@ -1540,6 +1826,12 @@ async function saveAll() {
         .map((row, i) => (results[i].ok ? null : { ...row, error: results[i].error }))
         .filter(Boolean);
       state.pendingRowsByTab.set(tab.id, failedRows);
+      if (failedRows.length > 0) {
+        const msg = failedRows.length === 1
+          ? failedRows[0].error
+          : failedRows.map((r, i) => `Rij ${i + 1}: ${r.error}`).join('\n');
+        showErrorDialog(msg);
+      }
     } catch (error) {
       showToast(error.message);
     }
@@ -1560,10 +1852,99 @@ function render() {
   renderTableView();
 }
 
+function closeConnectionContextMenu() {
+  document.querySelector('.connection-context-menu')?.remove();
+  state.contextMenuConnectionId = null;
+}
+
+function openConnectionContextMenu(event, connectionId) {
+  event.preventDefault();
+  closeConnectionContextMenu();
+  state.contextMenuConnectionId = connectionId;
+
+  const menu = document.createElement('div');
+  menu.className = 'connection-context-menu';
+  menu.innerHTML = `
+    <button type="button" data-context-action="duplicate">
+      <span class="context-menu-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </span>
+      Dupliceer connectie
+    </button>
+  `;
+  document.body.appendChild(menu);
+
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(event.clientX, window.innerWidth - rect.width - 8);
+  const top = Math.min(event.clientY, window.innerHeight - rect.height - 8);
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+}
+
 function applyTheme(theme) {
   const next = theme === 'dark' ? 'dark' : 'light';
   document.documentElement.setAttribute('data-theme', next);
   try { localStorage.setItem('sqlbase.theme', next); } catch {}
+}
+
+async function backupActiveTable() {
+  const tab = getActiveTab();
+  const connection = state.connections.find((item) => item.id === tab?.connectionId);
+  if (!tab || tab.type !== 'database' || !connection) {
+    return;
+  }
+
+  try {
+    const result = await window.sqlBase.backupTable({ connection, tableName: tab.tableName });
+    if (result?.canceled) {
+      return;
+    }
+
+    showToast(`Tabelbackup klaar: ${result.filePath}`);
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function refreshActiveView() {
+  const tab = getActiveTab();
+  const connection = tab?.type === 'database'
+    ? state.connections.find((item) => item.id === tab.connectionId)
+    : getActiveConnection();
+
+  if (!connection || connection.type === 'ssh') {
+    return;
+  }
+
+  const originalText = elements.refreshButton.textContent;
+  elements.refreshButton.textContent = 'Verversen...';
+  elements.refreshButton.disabled = true;
+  if (tab?.type === 'database') {
+    elements.tableMeta.textContent = 'Verversen...';
+  }
+
+  try {
+    state.activeConnectionId = connection.id;
+    const schema = await fetchSchemaForConnection(connection);
+    if (tab?.type === 'database') {
+      const payload = await loadActiveTable();
+      if (!payload) {
+        return;
+      }
+      const rowCount = payload?.rows?.length ?? 0;
+      const columnCount = payload?.columns?.length ?? 0;
+      showToast(`${tab.tableName} ververst: ${rowCount} rijen, ${columnCount} kolommen`);
+    } else {
+      render();
+      showToast(`Schema ververst: ${schema?.tables?.length || 0} tabellen`);
+    }
+  } catch (error) {
+    showToast(error.message);
+    renderTableView();
+  } finally {
+    elements.refreshButton.textContent = originalText;
+    renderTableView();
+  }
 }
 
 (function initTheme() {
@@ -1580,6 +1961,8 @@ elements.themeToggleButton.addEventListener('click', () => {
   const current = document.documentElement.getAttribute('data-theme');
   applyTheme(current === 'dark' ? 'light' : 'dark');
 });
+
+elements.backupButton.addEventListener('click', backupActiveTable);
 
 elements.newConnectionButton.addEventListener('click', () => {
   openConnectionForm('mariadb');
@@ -1601,6 +1984,30 @@ elements.connectionForm.addEventListener('keydown', (event) => {
     closeConnectionForm();
   }
 });
+
+document.addEventListener('click', (event) => {
+  const menu = event.target.closest('.connection-context-menu');
+  if (!menu) {
+    closeConnectionContextMenu();
+    return;
+  }
+
+  const actionButton = event.target.closest('[data-context-action]');
+  if (actionButton?.dataset.contextAction === 'duplicate' && state.contextMenuConnectionId) {
+    const connectionId = state.contextMenuConnectionId;
+    closeConnectionContextMenu();
+    duplicateConnection(connectionId);
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    closeConnectionContextMenu();
+  }
+});
+
+window.addEventListener('resize', closeConnectionContextMenu);
+window.addEventListener('blur', closeConnectionContextMenu);
 
 elements.connectionTypeSelect.addEventListener('change', () => {
   setConnectionFormType(elements.connectionTypeSelect.value);
@@ -1692,6 +2099,16 @@ elements.connectionsList.addEventListener('click', async (event) => {
   }
 });
 
+elements.connectionsList.addEventListener('contextmenu', (event) => {
+  const card = event.target.closest('[data-connection-card-id]');
+  if (!card) {
+    closeConnectionContextMenu();
+    return;
+  }
+
+  openConnectionContextMenu(event, card.dataset.connectionCardId);
+});
+
 elements.connectionsList.addEventListener('keydown', async (event) => {
   const groupNameInput = event.target.closest('[data-group-name-id]');
   if (!groupNameInput || event.key !== 'Enter') return;
@@ -1766,9 +2183,12 @@ elements.tabsBar.addEventListener('click', (event) => {
   if (tabButton) {
     state.activeTabId = tabButton.dataset.tabId;
     state.mode = 'data';
+    const nextTab = getActiveTab();
+    if (nextTab?.connectionId) {
+      state.activeConnectionId = nextTab.connectionId;
+    }
     render();
-    const tab = getActiveTab();
-    if (tab?.type !== 'ssh') {
+    if (nextTab?.type !== 'ssh') {
       loadActiveTable();
     }
   }
@@ -1956,6 +2376,31 @@ elements.dataTable.addEventListener('click', async (event) => {
   const tab = getActiveTab();
   if (!tab) return;
 
+  const fkBtn = event.target.closest('.fk-picker-btn');
+  if (fkBtn) {
+    event.stopPropagation();
+    if (activeFkBtn === fkBtn) {
+      closeFkDropdown();
+      return;
+    }
+    const wrapper = fkBtn.closest('.fk-picker');
+    activeFkInput = wrapper.querySelector('input[data-col]');
+    activeFkBtn = fkBtn;
+    const rect = wrapper.getBoundingClientRect();
+    const dropdownH = 300; // max-height uit CSS
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    const top = spaceBelow >= dropdownH || spaceBelow >= spaceAbove
+      ? rect.bottom + 3
+      : rect.top - Math.min(dropdownH, spaceAbove) - 3;
+    fkDropdown.style.top = `${top}px`;
+    fkDropdown.style.left = `${rect.left}px`;
+    fkDropdown.style.minWidth = `${Math.max(300, rect.width + 28)}px`;
+    fkDropdown.hidden = false;
+    await populateFkDropdown(fkBtn.dataset.fkTable, fkBtn.dataset.fkColumn);
+    return;
+  }
+
   const removePendingButton = event.target.closest('[data-remove-pending-id]');
   if (removePendingButton) {
     const pendingId = removePendingButton.dataset.removePendingId;
@@ -2142,11 +2587,7 @@ elements.relationsToggle.addEventListener('click', () => {
   elements.relationsPanel.classList.toggle('collapsed');
 });
 
-elements.refreshButton.addEventListener('click', async () => {
-  await loadSchemaForActiveConnection();
-  await loadActiveTable();
-  render();
-});
+elements.refreshButton.addEventListener('click', refreshActiveView);
 
 window.sqlBase.onConnectionFileSelected((payload) => {
   openConnectionForm('sqlite', payload);
@@ -2228,11 +2669,18 @@ async function executeSql() {
       elements.sqlResult.innerHTML = '<p class="sql-result-meta">Query uitgevoerd.</p>';
     }
   } catch (error) {
-    elements.sqlResult.innerHTML = `<p class="sql-result-error">${escapeHtml(error.message)}</p>`;
+    elements.sqlResult.hidden = true;
+    showErrorDialog(error.message);
   } finally {
     elements.sqlRunButton.disabled = false;
   }
 }
+
+elements.errorDialogClose.addEventListener('click', closeErrorDialog);
+elements.errorDialogBackdrop.addEventListener('click', closeErrorDialog);
+elements.errorDialog.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); closeErrorDialog(); }
+});
 
 elements.sqlButton.addEventListener('click', openSqlDialog);
 elements.sqlBackdrop.addEventListener('click', closeSqlDialog);
@@ -2242,6 +2690,65 @@ elements.sqlTextarea.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); executeSql(); }
   if (e.key === 'Escape') { e.preventDefault(); closeSqlDialog(); }
 });
+
+let lastFocusArea = 'workspace';
+
+document.querySelector('.connections-panel').addEventListener('mousedown', () => {
+  lastFocusArea = 'sidebar';
+});
+
+document.querySelector('.workspace').addEventListener('mousedown', () => {
+  lastFocusArea = 'workspace';
+});
+
+function closeSidebarFilter() {
+  state.sidebarFilterOpen = false;
+  elements.sidebarFilterInput.value = '';
+  elements.sidebarFilterClear.hidden = true;
+  elements.sidebarFilterWrap.hidden = true;
+  renderConnections();
+}
+
+elements.sidebarFilterInput.addEventListener('input', () => {
+  const hasValue = Boolean(elements.sidebarFilterInput.value);
+  elements.sidebarFilterClear.hidden = !hasValue;
+  renderConnections();
+});
+
+elements.sidebarFilterInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeSidebarFilter();
+  }
+});
+
+elements.sidebarFilterInput.addEventListener('blur', () => {
+  if (!elements.sidebarFilterInput.value.trim()) closeSidebarFilter();
+});
+
+elements.sidebarFilterClear.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+});
+
+elements.sidebarFilterClear.addEventListener('click', () => {
+  closeSidebarFilter();
+});
+
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+    if (lastFocusArea === 'sidebar' && state.sidebarView === 'tables') {
+      e.preventDefault();
+      state.sidebarFilterOpen = true;
+      elements.sidebarFilterWrap.hidden = false;
+      elements.sidebarFilterInput.focus();
+      elements.sidebarFilterInput.select();
+    } else if (!elements.tableView.hidden && state.mode === 'data') {
+      e.preventDefault();
+      elements.filterInput.focus();
+      elements.filterInput.select();
+    }
+  }
+}, true);
 
 setConnectionFormType('mariadb');
 loadConnections();

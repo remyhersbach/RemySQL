@@ -14,7 +14,7 @@ const SIZE = 1024;
 const CROP_W = 350;
 const LOGO_W = 930;
 const LOGO_H = 430;
-const MARK_W = 710;
+const MARK_W = 703;
 const scaledW = Math.round(MARK_W * LOGO_W / CROP_W);
 const scaledH = Math.round(MARK_W * LOGO_H / CROP_W);
 const leftShift = 0;
@@ -107,7 +107,7 @@ app.whenReady().then(async () => {
       left: ${leftShift}px;
       top: ${topOffset}px;
       display: block;
-      filter: brightness(0.965) contrast(1.075) saturate(1.02);
+      filter: brightness(0.935) contrast(1.16) saturate(1.03);
     }
   </style>
 </head>
