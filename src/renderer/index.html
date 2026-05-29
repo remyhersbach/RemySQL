@@ -95,7 +95,7 @@
             </div>
             <label class="limit-input">
               Limiet
-              <input id="limitInput" type="number" min="1" max="500" value="100" />
+              <input id="limitInput" type="number" min="1" max="5000" value="100" />
             </label>
           </div>
 
@@ -285,6 +285,23 @@
         <span class="muted-note">⌘↵ uitvoeren · Esc sluiten</span>
       </div>
       <div id="sqlResult" class="sql-result" hidden></div>
+    </div>
+
+    <div id="cellViewerBackdrop" class="cell-viewer-backdrop" hidden></div>
+    <div id="cellViewerDialog" class="cell-viewer-dialog" role="dialog" aria-modal="true" aria-labelledby="cellViewerTitle" hidden>
+      <div class="cell-viewer-header">
+        <div>
+          <p id="cellViewerMeta" class="eyebrow" style="margin:0 0 3px"></p>
+          <h3 id="cellViewerTitle" class="cell-viewer-title"></h3>
+        </div>
+        <button id="cellViewerClose" class="icon-button" type="button" title="Sluit" aria-label="Sluit">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <textarea id="cellViewerValue" class="cell-viewer-value" readonly spellcheck="false"></textarea>
+      <div class="cell-viewer-actions">
+        <button id="cellViewerCopy" class="ghost-button" type="button">Kopieer</button>
+      </div>
     </div>
 
     <div id="errorDialogBackdrop" class="error-dialog-backdrop" hidden></div>

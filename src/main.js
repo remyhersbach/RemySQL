@@ -61,14 +61,15 @@ function readConnections() {
 
   try {
     const payload = JSON.parse(readFileSync(filePath, 'utf8'));
-    return payload?.encrypted && payload?.data ? decryptConnections(payload) : [];
+    const connections = payload?.encrypted && payload?.data ? decryptConnections(payload) : [];
+    return normalizeConnectionPositions(connections);
   } catch (error) {
     throw new Error(`Connecties konden niet worden gelezen: ${error.message}`);
   }
 }
 
 function writeConnections(connections) {
-  writeFileSync(getConnectionsPath(), JSON.stringify(encryptConnections(connections), null, 2));
+  writeFileSync(getConnectionsPath(), JSON.stringify(encryptConnections(normalizeConnectionPositions(connections)), null, 2));
 }
 
 function getNextGroupName(connections) {
@@ -78,6 +79,147 @@ function getNextGroupName(connections) {
   }, 0);
 
   return `Groep ${highest + 1}`;
+}
+
+function finiteNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function getConnectionEntries(connections) {
+  const groups = new Map();
+  const entries = [];
+
+  connections.forEach((connection, index) => {
+    if (!connection.groupId) {
+      entries.push({
+        type: 'connection',
+        position: finiteNumber(connection.position, index),
+        originalIndex: index,
+        connection
+      });
+      return;
+    }
+
+    let group = groups.get(connection.groupId);
+    if (!group) {
+      group = {
+        type: 'group',
+        id: connection.groupId,
+        name: connection.groupName || 'Groep',
+        position: finiteNumber(connection.groupPosition, finiteNumber(connection.position, index)),
+        originalIndex: index,
+        connections: []
+      };
+      groups.set(connection.groupId, group);
+      entries.push(group);
+    }
+
+    group.connections.push({
+      connection,
+      position: finiteNumber(connection.position, group.connections.length),
+      originalIndex: index
+    });
+
+    if (connection.groupName) {
+      group.name = connection.groupName;
+    }
+  });
+
+  return entries
+    .sort((left, right) => left.position - right.position || left.originalIndex - right.originalIndex)
+    .map((entry) => {
+      if (entry.type !== 'group') return entry;
+
+      return {
+        ...entry,
+        connections: entry.connections.sort((left, right) => (
+          left.position - right.position || left.originalIndex - right.originalIndex
+        ))
+      };
+    });
+}
+
+function normalizeConnectionPositions(connections) {
+  const entries = getConnectionEntries(connections);
+  const nextConnections = [];
+
+  entries.forEach((entry, entryIndex) => {
+    if (entry.type === 'connection') {
+      const { groupId, groupName, groupPosition, ...connection } = entry.connection;
+      nextConnections.push({ ...connection, position: entryIndex });
+      return;
+    }
+
+    if (entry.connections.length < 2) {
+      entry.connections.forEach(({ connection }) => {
+        const { groupId, groupName, groupPosition, ...ungroupedConnection } = connection;
+        nextConnections.push({ ...ungroupedConnection, position: entryIndex });
+      });
+      return;
+    }
+
+    entry.connections.forEach(({ connection }, connectionIndex) => {
+      nextConnections.push({
+        ...connection,
+        groupId: entry.id,
+        groupName: entry.name,
+        groupPosition: entryIndex,
+        position: connectionIndex
+      });
+    });
+  });
+
+  return nextConnections;
+}
+
+function getConnectionEntryPosition(connections, connectionId) {
+  const entry = getConnectionEntries(connections).find((item) => (
+    item.type === 'connection'
+      ? item.connection.id === connectionId
+      : item.connections.some(({ connection }) => connection.id === connectionId)
+  ));
+
+  return entry ? finiteNumber(entry.position, 0) : 0;
+}
+
+function getConnectionGroupName(connection) {
+  return connection?.groupName || 'Groep';
+}
+
+function stripGroupFields(connection) {
+  const { groupId, groupName, groupPosition, ...ungroupedConnection } = connection;
+  return ungroupedConnection;
+}
+
+function groupConnectionList(connections, sourceConnectionId, targetConnectionId) {
+  if (!sourceConnectionId || !targetConnectionId || sourceConnectionId === targetConnectionId) {
+    return { connections: normalizeConnectionPositions(connections), groupId: null };
+  }
+
+  const source = connections.find((connection) => connection.id === sourceConnectionId);
+  const target = connections.find((connection) => connection.id === targetConnectionId);
+
+  if (!source || !target) {
+    return { connections: normalizeConnectionPositions(connections), groupId: null };
+  }
+
+  const groupId = target.groupId || source.groupId || randomUUID();
+  const groupName = target.groupName || source.groupName || getNextGroupName(connections);
+  const groupsToMerge = new Set([source.groupId, target.groupId].filter(Boolean));
+  const groupPosition = getConnectionEntryPosition(connections, target.id);
+
+  const nextConnections = normalizeConnectionPositions(connections.map((connection) => {
+    const joinsGroup = connection.id === source.id
+      || connection.id === target.id
+      || groupsToMerge.has(connection.groupId);
+
+    return joinsGroup
+      ? { ...connection, groupId, groupName, groupPosition }
+      : connection;
+  }));
+
+  return { connections: nextConnections, groupId };
 }
 
 function resolveHomePath(filePath) {
@@ -586,7 +728,7 @@ async function getSqliteIncomingForeignKeys(databasePath, tableName) {
 }
 
 async function getSqliteData(databasePath, tableName, filter, limit, columnFilter) {
-  const safeLimit = clamp(limit, 1, 500);
+  const safeLimit = clamp(limit, 1, 5000);
   const columns = await getSqliteColumns(databasePath, tableName);
   const searchableColumns = columns.map((column) => column.name);
   const clauses = [];
@@ -688,7 +830,7 @@ async function getMariaIncomingForeignKeys(connection, tableName) {
 }
 
 async function getMariaData(connection, tableName, filter, limit, columnFilter) {
-  const safeLimit = clamp(limit, 1, 500);
+  const safeLimit = clamp(limit, 1, 5000);
   const columns = await getMariaColumns(connection, tableName);
   const searchableColumns = columns.map((column) => column.name);
   const clauses = [];
@@ -862,6 +1004,8 @@ function normalizeConnection(connection) {
   const backgroundColor = isHexColor(connection.backgroundColor) ? connection.backgroundColor : null;
   const groupId = connection.groupId ? String(connection.groupId) : null;
   const groupName = groupId ? String(connection.groupName || 'Groep') : null;
+  const position = Number.isFinite(Number(connection.position)) ? Number(connection.position) : null;
+  const groupPosition = Number.isFinite(Number(connection.groupPosition)) ? Number(connection.groupPosition) : null;
   const normalizeTunnel = (value) => value
     ? {
         host: String(value.host || ''),
@@ -888,6 +1032,14 @@ function normalizeConnection(connection) {
     if (groupId) {
       normalized.groupId = groupId;
       normalized.groupName = groupName;
+    }
+
+    if (position !== null) {
+      normalized.position = position;
+    }
+
+    if (groupId && groupPosition !== null) {
+      normalized.groupPosition = groupPosition;
     }
 
     if (connection.readOnly) {
@@ -923,6 +1075,14 @@ function normalizeConnection(connection) {
       normalized.groupName = groupName;
     }
 
+    if (position !== null) {
+      normalized.position = position;
+    }
+
+    if (groupId && groupPosition !== null) {
+      normalized.groupPosition = groupPosition;
+    }
+
     if (!normalized.host || !normalized.user) {
       throw new Error('SSH host en user zijn verplicht.');
     }
@@ -950,6 +1110,14 @@ function normalizeConnection(connection) {
   if (groupId) {
     normalized.groupId = groupId;
     normalized.groupName = groupName;
+  }
+
+  if (position !== null) {
+    normalized.position = position;
+  }
+
+  if (groupId && groupPosition !== null) {
+    normalized.groupPosition = groupPosition;
   }
 
   if (!normalized.user || !normalized.database) {
@@ -1106,13 +1274,13 @@ ipcMain.handle('connections:add', async (_event, connection) => {
   const normalized = normalizeConnection(connection);
   const tables = normalized.type === 'ssh' ? [] : await getTables(normalized);
   const connections = readConnections();
-  const nextConnections = [
+  const nextConnections = normalizeConnectionPositions([
     normalized,
     ...connections.filter((item) => item.id !== normalized.id && !sameConnection(item, normalized))
-  ];
+  ]);
   writeConnections(nextConnections);
 
-  return { connection: normalized, tables };
+  return { connection: nextConnections.find((item) => item.id === normalized.id) || normalized, tables };
 });
 
 ipcMain.handle('connections:remove', (_event, connectionId) => {
@@ -1135,10 +1303,10 @@ ipcMain.handle('connections:duplicate', async (_event, connectionId) => {
     createdAt: new Date().toISOString()
   };
   const tables = duplicate.type === 'ssh' ? [] : await getTables(duplicate);
-  const nextConnections = [duplicate, ...connections];
+  const nextConnections = normalizeConnectionPositions([duplicate, ...connections]);
   writeConnections(nextConnections);
 
-  return { connection: duplicate, tables };
+  return { connection: nextConnections.find((item) => item.id === duplicate.id) || duplicate, tables };
 });
 
 ipcMain.handle('connections:update-background', (_event, { connectionId, backgroundColor }) => {
@@ -1158,34 +1326,66 @@ ipcMain.handle('connections:update-background', (_event, { connectionId, backgro
 });
 
 ipcMain.handle('connections:group', (_event, { sourceConnectionId, targetConnectionId }) => {
-  if (!sourceConnectionId || !targetConnectionId || sourceConnectionId === targetConnectionId) {
-    return { connections: readConnections(), groupId: null };
-  }
-
-  const connections = readConnections();
-  const source = connections.find((connection) => connection.id === sourceConnectionId);
-  const target = connections.find((connection) => connection.id === targetConnectionId);
-
-  if (!source || !target) {
-    return { connections, groupId: null };
-  }
-
-  const groupId = target.groupId || source.groupId || randomUUID();
-  const groupName = target.groupName || source.groupName || getNextGroupName(connections);
-  const groupsToMerge = new Set([source.groupId, target.groupId].filter(Boolean));
-
-  const nextConnections = connections.map((connection) => {
-    const joinsGroup = connection.id === source.id
-      || connection.id === target.id
-      || groupsToMerge.has(connection.groupId);
-
-    return joinsGroup
-      ? { ...connection, groupId, groupName }
-      : connection;
-  });
+  const { connections: nextConnections, groupId } = groupConnectionList(readConnections(), sourceConnectionId, targetConnectionId);
 
   writeConnections(nextConnections);
   return { connections: nextConnections, groupId };
+});
+
+ipcMain.handle('connections:move', (_event, { sourceConnectionId, targetConnectionId, targetGroupId, placement }) => {
+  const normalizedPlacement = ['before', 'after', 'inside'].includes(placement) ? placement : 'after';
+  const connections = readConnections();
+  const source = connections.find((connection) => connection.id === sourceConnectionId);
+
+  if (!source) {
+    return connections;
+  }
+
+  if (normalizedPlacement === 'inside') {
+    const { connections: nextConnections } = groupConnectionList(connections, sourceConnectionId, targetConnectionId);
+    writeConnections(nextConnections);
+    return nextConnections;
+  }
+
+  const delta = normalizedPlacement === 'before' ? -0.1 : 0.1;
+  const target = targetConnectionId
+    ? connections.find((connection) => connection.id === targetConnectionId)
+    : null;
+  const targetGroupEntry = targetGroupId
+    ? getConnectionEntries(connections).find((entry) => entry.type === 'group' && entry.id === targetGroupId)
+    : null;
+
+  if (!target && !targetGroupEntry) {
+    return connections;
+  }
+
+  const nextConnections = normalizeConnectionPositions(connections.map((connection) => {
+    if (connection.id !== source.id) {
+      return connection;
+    }
+
+    if (target?.groupId) {
+      return {
+        ...connection,
+        groupId: target.groupId,
+        groupName: getConnectionGroupName(target),
+        groupPosition: finiteNumber(target.groupPosition, getConnectionEntryPosition(connections, target.id)),
+        position: finiteNumber(target.position, 0) + delta
+      };
+    }
+
+    const targetPosition = target
+      ? finiteNumber(target.position, getConnectionEntryPosition(connections, target.id))
+      : finiteNumber(targetGroupEntry.position, 0);
+
+    return {
+      ...stripGroupFields(connection),
+      position: targetPosition + delta
+    };
+  }));
+
+  writeConnections(nextConnections);
+  return nextConnections;
 });
 
 ipcMain.handle('connections:update-group-name', (_event, { groupId, groupName }) => {
@@ -1196,11 +1396,11 @@ ipcMain.handle('connections:update-group-name', (_event, { groupId, groupName })
     return readConnections();
   }
 
-  const nextConnections = readConnections().map((connection) => (
+  const nextConnections = normalizeConnectionPositions(readConnections().map((connection) => (
     connection.groupId === normalizedGroupId
       ? { ...connection, groupName: normalizedGroupName }
       : connection
-  ));
+  )));
 
   writeConnections(nextConnections);
   return nextConnections;

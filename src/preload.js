@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('sqlBase', {
   duplicateConnection: (connectionId) => ipcRenderer.invoke('connections:duplicate', connectionId),
   updateConnectionBackground: (payload) => ipcRenderer.invoke('connections:update-background', payload),
   groupConnections: (payload) => ipcRenderer.invoke('connections:group', payload),
+  moveConnection: (payload) => ipcRenderer.invoke('connections:move', payload),
   updateConnectionGroupName: (payload) => ipcRenderer.invoke('connections:update-group-name', payload),
   startSsh: (connection) => ipcRenderer.invoke('ssh:start', connection),
   openSshInTerminal: (connection) => ipcRenderer.invoke('ssh:open-terminal', connection),

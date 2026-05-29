@@ -124,6 +124,13 @@ const elements = {
   sqlTextarea: document.querySelector('#sqlTextarea'),
   sqlRunButton: document.querySelector('#sqlRunButton'),
   sqlResult: document.querySelector('#sqlResult'),
+  cellViewerBackdrop: document.querySelector('#cellViewerBackdrop'),
+  cellViewerDialog: document.querySelector('#cellViewerDialog'),
+  cellViewerTitle: document.querySelector('#cellViewerTitle'),
+  cellViewerMeta: document.querySelector('#cellViewerMeta'),
+  cellViewerValue: document.querySelector('#cellViewerValue'),
+  cellViewerClose: document.querySelector('#cellViewerClose'),
+  cellViewerCopy: document.querySelector('#cellViewerCopy'),
   readOnlyBadge: document.querySelector('#readOnlyBadge'),
   connectionReadOnlyRow: document.querySelector('#connectionReadOnlyRow'),
   connectionReadOnlyCheckbox: document.querySelector('#connectionReadOnlyCheckbox'),
@@ -393,6 +400,51 @@ function formatPlainValue(value) {
   return String(value);
 }
 
+function getCurrentCellValue(rowIndex, columnName) {
+  const tab = getActiveTab();
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  if (!tab || !payload) return undefined;
+
+  const editKey = `${rowIndex}:${columnName}`;
+  const existingEdit = state.editsByTab.get(tab.id)?.get(editKey);
+  if (existingEdit !== undefined) return existingEdit.value;
+
+  return payload.rows?.[rowIndex]?.[columnName];
+}
+
+function openCellViewer(rowIndex, columnName) {
+  const tab = getActiveTab();
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  const column = payload?.columns?.find((item) => item.name === columnName);
+  if (!tab || !payload || !column) return;
+
+  const value = getCurrentCellValue(rowIndex, columnName);
+  elements.cellViewerTitle.textContent = columnName;
+  elements.cellViewerMeta.textContent = `${tab.tableName} · rij ${rowIndex + 1}${column.type ? ` · ${column.type}` : ''}`;
+  elements.cellViewerValue.value = formatPlainValue(value);
+  elements.cellViewerBackdrop.hidden = false;
+  elements.cellViewerDialog.hidden = false;
+  elements.cellViewerValue.focus();
+  elements.cellViewerValue.setSelectionRange(0, 0);
+}
+
+function closeCellViewer() {
+  elements.cellViewerDialog.hidden = true;
+  elements.cellViewerBackdrop.hidden = true;
+}
+
+async function copyCellViewerValue() {
+  const text = elements.cellViewerValue.value;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    elements.cellViewerValue.focus();
+    elements.cellViewerValue.select();
+    document.execCommand('copy');
+  }
+  showToast('Celinhoud gekopieerd');
+}
+
 function isHexColor(value) {
   return /^#[0-9a-f]{6}$/i.test(String(value || ''));
 }
@@ -468,7 +520,7 @@ function isConnectionActive(connection) {
 
 function getConnectionTypeIcon(type) {
   return type === 'ssh'
-    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
+    ? '<span class="terminal-glyph" aria-hidden="true">&gt;_</span>'
     : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>';
 }
 
@@ -550,7 +602,14 @@ function getConnectionFromForm() {
   const existingConnection = id ? state.connections.find((connection) => connection.id === id) : null;
   const existingBackgroundColor = existingConnection?.backgroundColor;
   const existingGroup = existingConnection?.groupId
-    ? { groupId: existingConnection.groupId, groupName: existingConnection.groupName }
+    ? {
+        groupId: existingConnection.groupId,
+        groupName: existingConnection.groupName,
+        ...(Number.isFinite(Number(existingConnection.groupPosition)) ? { groupPosition: Number(existingConnection.groupPosition) } : {})
+      }
+    : {};
+  const existingPosition = Number.isFinite(Number(existingConnection?.position))
+    ? { position: Number(existingConnection.position) }
     : {};
 
   if (elements.connectionTypeSelect.value === 'sqlite') {
@@ -561,6 +620,7 @@ function getConnectionFromForm() {
       path: elements.connectionPathInput.value,
       ...(elements.connectionReadOnlyCheckbox.checked ? { readOnly: true } : {}),
       ...(existingBackgroundColor ? { backgroundColor: existingBackgroundColor } : {}),
+      ...existingPosition,
       ...existingGroup
     };
   }
@@ -576,6 +636,7 @@ function getConnectionFromForm() {
       password: elements.sshPasswordInput.value,
       keyPath: elements.sshKeyPathInput.value,
       ...(existingBackgroundColor ? { backgroundColor: existingBackgroundColor } : {}),
+      ...existingPosition,
       ...existingGroup
     };
   }
@@ -602,6 +663,7 @@ function getConnectionFromForm() {
     ...(sshTunnel ? { sshTunnel } : {}),
     ...(elements.connectionReadOnlyCheckbox.checked ? { readOnly: true } : {}),
     ...(existingBackgroundColor ? { backgroundColor: existingBackgroundColor } : {}),
+    ...existingPosition,
     ...existingGroup
   };
 }
@@ -771,6 +833,17 @@ async function groupConnections(sourceConnectionId, targetConnectionId) {
     const result = await window.sqlBase.groupConnections({ sourceConnectionId, targetConnectionId });
     state.connections = result.connections || state.connections;
     state.focusGroupId = result.groupId || null;
+    render();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function moveConnection(payload) {
+  if (!payload?.sourceConnectionId) return;
+
+  try {
+    state.connections = await window.sqlBase.moveConnection(payload);
     render();
   } catch (error) {
     showToast(error.message);
@@ -1194,7 +1267,8 @@ function renderConnections() {
 
     const appendConnectionCard = (conn, parent) => {
       const backgroundColor = isHexColor(conn.backgroundColor) ? conn.backgroundColor.toLowerCase() : '#ffffff';
-      const typeLabel = conn.type === 'ssh' ? 'SSH' : 'Database';
+      const isTerminal = conn.type === 'ssh';
+      const typeLabel = isTerminal ? 'Terminal' : 'Database';
       const isActive = isConnectionActive(conn);
       const typeIcon = getConnectionTypeIcon(conn.type);
       const item = document.createElement('article');
@@ -1226,7 +1300,7 @@ function renderConnections() {
           aria-label="${isActive ? `Disconnect ${escapeHtml(conn.name)}` : `${escapeHtml(conn.name)} is niet actief`}"
         ></button>
         <button class="connection-button" data-connection-id="${escapeHtml(conn.id)}">
-          <span class="connection-type-icon ${conn.type === 'ssh' ? 'ssh' : 'database'}" title="${typeLabel}" aria-label="${typeLabel}">
+          <span class="connection-type-icon ${isTerminal ? 'ssh' : 'database'}" title="${typeLabel}" aria-label="${typeLabel}">
             ${typeIcon}
           </span>
           <span class="connection-details">
@@ -1449,6 +1523,23 @@ function renderDataTable(payload) {
     return items;
   })();
 
+  const renderCellViewButton = (rowIndex, columnName) => `
+    <button
+      type="button"
+      class="cell-expand-button"
+      data-view-cell-row-index="${rowIndex}"
+      data-view-cell-column="${escapeHtml(columnName)}"
+      title="Bekijk celinhoud groot"
+      aria-label="Bekijk celinhoud van ${escapeHtml(columnName)} groot"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M15 3h6v6"/>
+        <path d="M10 14 21 3"/>
+        <path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4"/>
+      </svg>
+    </button>
+  `;
+
   const renderCell = (row, column, rowIndex) => {
     const editKey = `${rowIndex}:${column.name}`;
     const edit = edits.get(editKey);
@@ -1458,27 +1549,40 @@ function renderDataTable(payload) {
       const cellClass = edit.error ? 'edited-cell-error' : 'edited-cell';
       const content = edit.value === '' ? '<span class="muted-note">NULL</span>' : escapeHtml(edit.value);
       const titleText = edit.error ? edit.error : edit.value;
-      return `<td class="${cellClass}" title="${escapeHtml(titleText)}">${content}</td>`;
+      return `
+        <td class="data-cell ${cellClass}" title="${escapeHtml(titleText)}">
+          <span class="cell-content">${content}</span>
+          ${renderCellViewButton(rowIndex, column.name)}
+        </td>
+      `;
     }
 
     const relationMatch = getOutgoingRelationByColumn(payload, column.name);
     const content = formatValueWithHighlight(rawValue, column.name);
 
     if (!relationMatch) {
-      return `<td title="${escapeHtml(formatPlainValue(rawValue))}">${content}</td>`;
+      return `
+        <td class="data-cell" title="${escapeHtml(formatPlainValue(rawValue))}">
+          <span class="cell-content">${content}</span>
+          ${renderCellViewButton(rowIndex, column.name)}
+        </td>
+      `;
     }
 
     return `
-      <td class="relation-cell" title="Klik om ${escapeHtml(relationMatch.relation.toTable)} te openen voor ${escapeHtml(formatPlainValue(rawValue))}; dubbelklik om te bewerken">
-        <button
-          type="button"
-          class="relation-value-button"
-          data-row-index="${rowIndex}"
-          data-relation-kind="outgoing"
-          data-relation-index="${relationMatch.index}"
-        >
-          ${content}
-        </button>
+      <td class="data-cell relation-cell" title="Klik om ${escapeHtml(relationMatch.relation.toTable)} te openen voor ${escapeHtml(formatPlainValue(rawValue))}; dubbelklik om te bewerken">
+        <span class="cell-content">
+          <button
+            type="button"
+            class="relation-value-button"
+            data-row-index="${rowIndex}"
+            data-relation-kind="outgoing"
+            data-relation-index="${relationMatch.index}"
+          >
+            ${content}
+          </button>
+        </span>
+        ${renderCellViewButton(rowIndex, column.name)}
       </td>
     `;
   };
@@ -2118,10 +2222,88 @@ elements.connectionsList.addEventListener('keydown', async (event) => {
   groupNameInput.blur();
 });
 
+function getConnectionDropPlacement(event, targetEl) {
+  const rect = targetEl.getBoundingClientRect();
+  const ratio = (event.clientY - rect.top) / Math.max(rect.height, 1);
+  if (ratio < 0.28) return 'before';
+  if (ratio > 0.72) return 'after';
+  return 'inside';
+}
+
+function getGroupDropPlacement(event, groupEl) {
+  const rect = groupEl.getBoundingClientRect();
+  return event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+}
+
+function setConnectionDropTarget(targetEl, placement) {
+  clearConnectionDropTargets();
+  targetEl.classList.add(`drop-${placement}`);
+}
+
 function clearConnectionDropTargets() {
-  elements.connectionsList.querySelectorAll('.connection-item.drop-target').forEach((item) => {
-    item.classList.remove('drop-target');
-  });
+  elements.connectionsList
+    .querySelectorAll('.drop-before, .drop-after, .drop-inside')
+    .forEach((item) => {
+      item.classList.remove('drop-before', 'drop-after', 'drop-inside');
+    });
+}
+
+async function handleConnectionDrop(event) {
+  const sourceConnectionId = event.dataTransfer.getData('text/plain') || state.draggingConnectionId;
+  if (!sourceConnectionId) return;
+
+  const item = event.target.closest('[data-connection-card-id]');
+  if (item?.dataset.connectionCardId === sourceConnectionId) return;
+  if (item && item.dataset.connectionCardId !== sourceConnectionId) {
+    event.preventDefault();
+    const placement = getConnectionDropPlacement(event, item);
+    if (placement === 'inside') {
+      await groupConnections(sourceConnectionId, item.dataset.connectionCardId);
+    } else {
+      await moveConnection({
+        sourceConnectionId,
+        targetConnectionId: item.dataset.connectionCardId,
+        placement
+      });
+    }
+    return;
+  }
+
+  const groupEl = event.target.closest('[data-connection-group-id]');
+  if (groupEl) {
+    event.preventDefault();
+    await moveConnection({
+      sourceConnectionId,
+      targetGroupId: groupEl.dataset.connectionGroupId,
+      placement: getGroupDropPlacement(event, groupEl)
+    });
+  }
+}
+
+function updateConnectionDragTarget(event) {
+  const sourceConnectionId = state.draggingConnectionId;
+  if (!sourceConnectionId) return false;
+
+  const item = event.target.closest('[data-connection-card-id]');
+  if (item?.dataset.connectionCardId === sourceConnectionId) {
+    clearConnectionDropTargets();
+    return false;
+  }
+  if (item && item.dataset.connectionCardId !== sourceConnectionId) {
+    const placement = getConnectionDropPlacement(event, item);
+    setConnectionDropTarget(item, placement);
+    return true;
+  }
+
+  const groupEl = event.target.closest('[data-connection-group-id]');
+  if (groupEl) {
+    const placement = getGroupDropPlacement(event, groupEl);
+    setConnectionDropTarget(groupEl, placement);
+    return true;
+  }
+
+  clearConnectionDropTargets();
+  return false;
 }
 
 elements.connectionsList.addEventListener('dragstart', (event) => {
@@ -2137,30 +2319,21 @@ elements.connectionsList.addEventListener('dragstart', (event) => {
 });
 
 elements.connectionsList.addEventListener('dragover', (event) => {
-  const item = event.target.closest('[data-connection-card-id]');
-  if (!item || item.dataset.connectionCardId === state.draggingConnectionId) return;
-
+  if (!updateConnectionDragTarget(event)) return;
   event.preventDefault();
-  clearConnectionDropTargets();
-  item.classList.add('drop-target');
+  event.dataTransfer.dropEffect = 'move';
 });
 
 elements.connectionsList.addEventListener('dragleave', (event) => {
-  const item = event.target.closest('[data-connection-card-id]');
-  if (item && !item.contains(event.relatedTarget)) {
-    item.classList.remove('drop-target');
+  const target = event.target.closest('[data-connection-card-id], [data-connection-group-id]');
+  if (target && !target.contains(event.relatedTarget)) {
+    target.classList.remove('drop-before', 'drop-after', 'drop-inside');
   }
 });
 
 elements.connectionsList.addEventListener('drop', async (event) => {
-  const item = event.target.closest('[data-connection-card-id]');
-  const sourceConnectionId = event.dataTransfer.getData('text/plain') || state.draggingConnectionId;
-
   clearConnectionDropTargets();
-
-  if (!item || !sourceConnectionId) return;
-  event.preventDefault();
-  await groupConnections(sourceConnectionId, item.dataset.connectionCardId);
+  await handleConnectionDrop(event);
 });
 
 elements.connectionsList.addEventListener('dragend', () => {
@@ -2376,6 +2549,17 @@ elements.dataTable.addEventListener('click', async (event) => {
   const tab = getActiveTab();
   if (!tab) return;
 
+  const cellExpandButton = event.target.closest('.cell-expand-button');
+  if (cellExpandButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    openCellViewer(
+      Number(cellExpandButton.dataset.viewCellRowIndex),
+      cellExpandButton.dataset.viewCellColumn
+    );
+    return;
+  }
+
   const fkBtn = event.target.closest('.fk-picker-btn');
   if (fkBtn) {
     event.stopPropagation();
@@ -2500,6 +2684,8 @@ elements.sshDisconnectButton.addEventListener('click', async () => {
 });
 
 elements.dataTable.addEventListener('dblclick', (event) => {
+  if (event.target.closest('.cell-expand-button')) return;
+
   const td = event.target.closest('td');
   const row = td?.closest('tr[data-row-index]');
   if (!td || !row) return;
@@ -2689,6 +2875,15 @@ elements.sqlRunButton.addEventListener('click', executeSql);
 elements.sqlTextarea.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); executeSql(); }
   if (e.key === 'Escape') { e.preventDefault(); closeSqlDialog(); }
+});
+elements.cellViewerBackdrop.addEventListener('click', closeCellViewer);
+elements.cellViewerClose.addEventListener('click', closeCellViewer);
+elements.cellViewerCopy.addEventListener('click', copyCellViewerValue);
+elements.cellViewerDialog.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeCellViewer();
+  }
 });
 
 let lastFocusArea = 'workspace';
