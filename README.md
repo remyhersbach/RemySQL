@@ -35,6 +35,22 @@ Voor de lokale SQLite demo:
 2. Kies `sample/demo.sqlite`
 3. Open een tabel links.
 
+## Release maken
+
+Gebruik het release-script vanaf een schone git worktree:
+
+```bash
+npm run release
+```
+
+Het script verhoogt het versienummer, dwingt een `CHANGELOG.md`-sectie af, draait syntax-checks, bouwt een macOS DMG met `npm run build:mac`, maakt een release-commit plus git-tag, en vraagt daarna bevestiging voordat het naar GitHub pusht.
+
+Wil je de DMG ook direct als GitHub Release asset uploaden, zet `REMYSQL_GH_TOKEN` met `contents:write` en gebruik:
+
+```bash
+npm run release:publish
+```
+
 ## Eerste scope
 
 Deze versie gebruikt de officiële MariaDB Node-driver voor MariaDB en de lokale `sqlite3` command line tool voor de demo. Wachtwoorden worden in deze eerste iteratie lokaal in Electron user data opgeslagen; dat is prima voor een prototype, maar de volgende stap is opslag via Keychain/credential store.

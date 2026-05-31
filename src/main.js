@@ -1,15 +1,47 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, safeStorage, shell } = require('electron');
 const { execFile, spawn } = require('node:child_process');
-const { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync } = require('node:fs');
+const { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync, readdirSync } = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 app.name = 'RemySQL';
 
 let mariadb;
+let pty;
 
 let mainWindow;
 const sshSessions = new Map();
+
+function ensurePtySpawnHelperExecutable() {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  try {
+    const prebuildsPath = path.join(__dirname, '..', 'node_modules', 'node-pty', 'prebuilds');
+    if (!existsSync(prebuildsPath)) {
+      return;
+    }
+
+    for (const dir of readdirSync(prebuildsPath)) {
+      if (!dir.startsWith('darwin-')) continue;
+      const helperPath = path.join(prebuildsPath, dir, 'spawn-helper');
+      if (existsSync(helperPath)) {
+        chmodSync(helperPath, 0o755);
+      }
+    }
+  } catch (error) {
+    console.warn('node-pty spawn-helper kon niet uitvoerbaar worden gemaakt:', error.message);
+  }
+}
+
+function getPty() {
+  if (!pty) {
+    ensurePtySpawnHelperExecutable();
+    pty = require('node-pty');
+  }
+  return pty;
+}
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, Number(value) || min));
 const quoteSqliteIdentifier = (name) => `"${String(name).replaceAll('"', '""')}"`;
@@ -19,6 +51,98 @@ const isHexColor = (value) => /^#[0-9a-f]{6}$/i.test(String(value || ''));
 const connectionColors = new Set(['#ffffff', '#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#64748b']);
 const isConnectionColor = (value) => connectionColors.has(String(value || '').toLowerCase());
 const encryptedConnectionsVersion = 1;
+const packageJson = require('../package.json');
+const githubRepo = getGitHubRepoFromPackage(packageJson);
+
+function getGitHubRepoFromPackage(pkg) {
+  const rawUrl = String(pkg?.repository?.url || pkg?.homepage || '').trim();
+  const match = rawUrl.match(/github\.com[:/](.+?)(?:\.git)?(?:[#?].*)?$/i);
+  return match ? match[1].replace(/^\/+|\/+$/g, '') : null;
+}
+
+function getChangelogPath() {
+  return path.join(__dirname, '..', 'CHANGELOG.md');
+}
+
+function readChangelog() {
+  try {
+    return readFileSync(getChangelogPath(), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function normalizeVersion(value) {
+  return String(value || '').trim().replace(/^v/i, '');
+}
+
+function compareVersions(left, right) {
+  const a = normalizeVersion(left).split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0);
+  const b = normalizeVersion(right).split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(a.length, b.length);
+  for (let i = 0; i < length; i += 1) {
+    if ((a[i] || 0) > (b[i] || 0)) return 1;
+    if ((a[i] || 0) < (b[i] || 0)) return -1;
+  }
+  return 0;
+}
+
+function getPreferredReleaseAsset(assets = []) {
+  const platformExt = process.platform === 'darwin'
+    ? ['.dmg', '.zip']
+    : process.platform === 'win32'
+      ? ['.exe', '.msi']
+      : ['.appimage', '.deb', '.rpm', '.tar.gz'];
+  return assets.find((asset) => {
+    const name = String(asset?.name || '').toLowerCase();
+    return platformExt.some((ext) => name.endsWith(ext));
+  }) || assets[0] || null;
+}
+
+async function checkForUpdates() {
+  if (!githubRepo) {
+    return { configured: false, updateAvailable: false, currentVersion: app.getVersion() };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(`https://api.github.com/repos/${githubRepo}/releases/latest`, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': `${app.name}/${app.getVersion()}`
+      },
+      signal: controller.signal
+    });
+
+    if (response.status === 404) {
+      return { configured: true, updateAvailable: false, currentVersion: app.getVersion(), error: 'Geen GitHub release gevonden.' };
+    }
+    if (!response.ok) {
+      throw new Error(`GitHub gaf status ${response.status}.`);
+    }
+
+    const release = await response.json();
+    const latestVersion = normalizeVersion(release.tag_name || release.name);
+    const currentVersion = app.getVersion();
+    const asset = getPreferredReleaseAsset(release.assets || []);
+    const updateAvailable = latestVersion && compareVersions(latestVersion, currentVersion) > 0;
+
+    return {
+      configured: true,
+      updateAvailable,
+      currentVersion,
+      latestVersion,
+      releaseName: release.name || release.tag_name || latestVersion,
+      releaseNotes: release.body || '',
+      releaseUrl: release.html_url || `https://github.com/${githubRepo}/releases/latest`,
+      downloadUrl: asset?.browser_download_url || release.html_url || `https://github.com/${githubRepo}/releases/latest`,
+      assetName: asset?.name || ''
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 function getConnectionsPath() {
   const dir = app.getPath('userData');
@@ -228,12 +352,45 @@ function resolveHomePath(filePath) {
     : String(filePath || '');
 }
 
+const executableSearchPaths = [
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  '/usr/bin',
+  '/bin',
+  '/usr/sbin',
+  '/sbin'
+];
+
+function getSpawnEnv(extra = {}) {
+  const existingPath = String(process.env.PATH || '')
+    .split(path.delimiter)
+    .filter(Boolean);
+  const pathValue = [...new Set([...existingPath, ...executableSearchPaths])].join(path.delimiter);
+  return { ...process.env, PATH: pathValue, ...extra };
+}
+
+function resolveExecutable(command) {
+  if (!command || path.isAbsolute(command)) {
+    return command;
+  }
+
+  const searchPaths = String(getSpawnEnv().PATH || '')
+    .split(path.delimiter)
+    .filter(Boolean);
+  const match = searchPaths
+    .map((dir) => path.join(dir, command))
+    .find((candidate) => existsSync(candidate));
+
+  return match || command;
+}
+
 function buildSshCommand(connection, sessionId) {
   const authMode = connection.keyPath
     ? 'key'
     : connection.password
       ? 'password'
       : 'ssh-agent/default key';
+  const command = resolveExecutable('ssh');
   const args = [
     '-tt',
     '-o', 'StrictHostKeyChecking=accept-new',
@@ -252,7 +409,7 @@ function buildSshCommand(connection, sessionId) {
     chmodSync(askpassPath, 0o700);
 
     return {
-      command: 'ssh',
+      command,
       args,
       authMode,
       env: {
@@ -267,7 +424,7 @@ function buildSshCommand(connection, sessionId) {
     };
   }
 
-  return { command: 'ssh', args, authMode };
+  return { command, args, authMode };
 }
 
 function shellQuote(value) {
@@ -286,7 +443,7 @@ function buildSshTerminalCommand(connection) {
   }
 
   args.push(`${connection.user}@${connection.host}`);
-  return ['ssh', ...args].map(shellQuote).join(' ');
+  return [resolveExecutable('ssh'), ...args].map(shellQuote).join(' ');
 }
 
 function getSshFailureHint(output, code, command, authMode) {
@@ -443,13 +600,14 @@ async function startDatabaseSshTunnel(connection) {
     };
   }
 
-  const child = spawn('ssh', args, {
+  const command = resolveExecutable('ssh');
+  const child = spawn(command, args, {
     stdio: ['ignore', 'ignore', 'pipe'],
-    env: { ...process.env, ...env },
+    env: getSpawnEnv(env),
     detached: false
   });
 
-  let diagnosticOutput = `auth=${authMode}; ssh=${tunnel.user}@${tunnel.host}:${tunnel.port}; target=${connection.host}:${connection.port}`;
+  let diagnosticOutput = `auth=${authMode}; command=${command}; ssh=${tunnel.user}@${tunnel.host}:${tunnel.port}; target=${connection.host}:${connection.port}`;
   child.stderr.on('data', (data) => {
     diagnosticOutput = `${diagnosticOutput}${data.toString()}`.slice(-6000);
   });
@@ -727,7 +885,28 @@ async function getSqliteIncomingForeignKeys(databasePath, tableName) {
   return incoming;
 }
 
-async function getSqliteData(databasePath, tableName, filter, limit, columnFilter) {
+function normalizeSort(sort, columns) {
+  const direction = String(sort?.direction || '').toLowerCase();
+  if (!['asc', 'desc'].includes(direction)) {
+    return null;
+  }
+
+  const column = columns.find((item) => item.name === sort?.column);
+  if (!column) {
+    return null;
+  }
+
+  return { column: column.name, direction };
+}
+
+function interpolateSql(sql, values) {
+  let index = 0;
+  return sql.replace(/\?/g, () => (
+    index < values.length ? quoteLiteral(values[index++]) : '?'
+  ));
+}
+
+async function getSqliteData(databasePath, tableName, filter, limit, columnFilter, sort) {
   const safeLimit = clamp(limit, 1, 5000);
   const columns = await getSqliteColumns(databasePath, tableName);
   const searchableColumns = columns.map((column) => column.name);
@@ -754,7 +933,13 @@ async function getSqliteData(databasePath, tableName, filter, limit, columnFilte
   }
 
   const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
-  return runSqlite(databasePath, `SELECT * FROM ${quoteSqliteIdentifier(tableName)}${where} LIMIT ${safeLimit};`);
+  const normalizedSort = normalizeSort(sort, columns);
+  const order = normalizedSort
+    ? ` ORDER BY ${quoteSqliteIdentifier(normalizedSort.column)} ${normalizedSort.direction.toUpperCase()}`
+    : '';
+  const query = `SELECT * FROM ${quoteSqliteIdentifier(tableName)}${where}${order} LIMIT ${safeLimit};`;
+  const rows = await runSqlite(databasePath, query);
+  return { rows, query };
 }
 
 async function getMariaTables(connection) {
@@ -829,7 +1014,7 @@ async function getMariaIncomingForeignKeys(connection, tableName) {
   );
 }
 
-async function getMariaData(connection, tableName, filter, limit, columnFilter) {
+async function getMariaData(connection, tableName, filter, limit, columnFilter, sort) {
   const safeLimit = clamp(limit, 1, 5000);
   const columns = await getMariaColumns(connection, tableName);
   const searchableColumns = columns.map((column) => column.name);
@@ -859,7 +1044,13 @@ async function getMariaData(connection, tableName, filter, limit, columnFilter) 
   }
 
   const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
-  return runMariaDb(connection, `SELECT * FROM ${quoteMariaIdentifier(tableName)}${where} LIMIT ${safeLimit};`, values);
+  const normalizedSort = normalizeSort(sort, columns);
+  const order = normalizedSort
+    ? ` ORDER BY ${quoteMariaIdentifier(normalizedSort.column)} ${normalizedSort.direction.toUpperCase()}`
+    : '';
+  const query = `SELECT * FROM ${quoteMariaIdentifier(tableName)}${where}${order} LIMIT ${safeLimit};`;
+  const rows = await runMariaDb(connection, query, values);
+  return { rows, query: interpolateSql(query, values) };
 }
 
 function getConnectionLabel(connection) {
@@ -881,10 +1072,10 @@ async function getColumns(connection, tableName) {
   return connection.type === 'mariadb' ? getMariaColumns(connection, tableName) : getSqliteColumns(connection.path, tableName);
 }
 
-async function getData(connection, tableName, filter, limit, columnFilter) {
+async function getData(connection, tableName, filter, limit, columnFilter, sort) {
   return connection.type === 'mariadb'
-    ? getMariaData(connection, tableName, filter, limit, columnFilter)
-    : getSqliteData(connection.path, tableName, filter, limit, columnFilter);
+    ? getMariaData(connection, tableName, filter, limit, columnFilter, sort)
+    : getSqliteData(connection.path, tableName, filter, limit, columnFilter, sort);
 }
 
 async function getOutgoingForeignKeys(connection, tableName) {
@@ -1270,6 +1461,24 @@ function createMenu() {
 
 ipcMain.handle('connections:list', () => readConnections());
 
+ipcMain.handle('app:info', () => ({
+  name: app.name,
+  version: app.getVersion(),
+  changelog: readChangelog(),
+  updateRepository: githubRepo
+}));
+
+ipcMain.handle('app:check-updates', () => checkForUpdates());
+
+ipcMain.handle('app:open-external', async (_event, url) => {
+  const target = String(url || '');
+  if (!/^https?:\/\//i.test(target)) {
+    throw new Error('Ongeldige externe link.');
+  }
+  await shell.openExternal(target);
+  return { ok: true };
+});
+
 ipcMain.handle('connections:add', async (_event, connection) => {
   const normalized = normalizeConnection(connection);
   const tables = normalized.type === 'ssh' ? [] : await getTables(normalized);
@@ -1406,17 +1615,28 @@ ipcMain.handle('connections:update-group-name', (_event, { groupId, groupName })
   return nextConnections;
 });
 
-ipcMain.handle('ssh:start', (_event, connection) => {
+ipcMain.handle('ssh:start', (_event, payload) => {
+  const connection = payload?.connection || payload;
+  const cols = clamp(payload?.cols || 100, 20, 300);
+  const rows = clamp(payload?.rows || 30, 5, 120);
   const normalized = normalizeConnection({ ...connection, type: 'ssh' });
   const sessionId = randomUUID();
   const { command, args, authMode, env = {}, cleanup = null } = buildSshCommand(normalized, sessionId);
-  const child = spawn(command, args, {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, ...env, TERM: 'xterm-256color' },
-    detached: false
-  });
+  let ptyProcess;
+  try {
+    ptyProcess = getPty().spawn(command, args, {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      cwd: app.getPath('home'),
+      env: getSpawnEnv({ ...env, TERM: 'xterm-256color' }),
+    });
+  } catch (error) {
+    cleanup?.();
+    throw new Error(`SSH kon niet worden gestart via ${command}: ${error.message}`);
+  }
 
-  sshSessions.set(sessionId, { child, cleanup });
+  sshSessions.set(sessionId, { ptyProcess, cleanup });
   let didCleanup = false;
   const cleanupSession = () => {
     if (didCleanup) return;
@@ -1424,32 +1644,30 @@ ipcMain.handle('ssh:start', (_event, connection) => {
     cleanup?.();
   };
   let diagnosticOutput = `auth=${authMode}; host=${normalized.host}; port=${normalized.port}; user=${normalized.user}; command=${command}`;
+  let passwordSent = false;
   mainWindow?.webContents.send('ssh:data', {
     sessionId,
-    data: `SSH diagnose: ${normalized.user}@${normalized.host}:${normalized.port} via ${authMode}\n`
+    data: `SSH diagnose: ${normalized.user}@${normalized.host}:${normalized.port} via ${authMode}\r\n`
   });
 
   const sendData = (data) => {
-    const text = data.toString();
+    const text = String(data);
     diagnosticOutput = `${diagnosticOutput}${text}`.slice(-6000);
     mainWindow?.webContents.send('ssh:data', { sessionId, data: text });
+
+    if (!passwordSent && normalized.password && !normalized.keyPath && /password[: ]*$/i.test(text.trim())) {
+      passwordSent = true;
+      ptyProcess.write(`${normalized.password}\r`);
+    }
   };
 
-  child.stdout.on('data', sendData);
-  child.stderr.on('data', sendData);
-  child.on('error', (error) => {
-    const message = error.message;
-    diagnosticOutput = `${diagnosticOutput}\n${message}`;
-    mainWindow?.webContents.send('ssh:data', { sessionId, data: `\n${message}\n` });
-    mainWindow?.webContents.send('ssh:exit', { sessionId, code: 1 });
-    cleanupSession();
-    sshSessions.delete(sessionId);
-  });
-  child.on('close', (code) => {
+  ptyProcess.onData(sendData);
+  ptyProcess.onExit(({ exitCode }) => {
+    const code = typeof exitCode === 'number' ? exitCode : 0;
     if (code) {
       const hint = getSshFailureHint(diagnosticOutput, code, command, authMode);
       if (hint) {
-        mainWindow?.webContents.send('ssh:data', { sessionId, data: `\nHint: ${hint}\n` });
+        mainWindow?.webContents.send('ssh:data', { sessionId, data: `\r\nHint: ${hint}\r\n` });
       }
     }
     mainWindow?.webContents.send('ssh:exit', { sessionId, code });
@@ -1490,14 +1708,25 @@ ipcMain.handle('ssh:open-terminal', async (_event, connection) => {
 
 ipcMain.handle('ssh:write', (_event, { sessionId, data }) => {
   const session = sshSessions.get(sessionId);
-  if (session?.child && !session.child.killed) {
+  if (session?.ptyProcess) {
+    session.ptyProcess.write(String(data || ''));
+  } else if (session?.child && !session.child.killed) {
     session.child.stdin.write(data);
+  }
+});
+
+ipcMain.handle('ssh:resize', (_event, { sessionId, cols, rows }) => {
+  const session = sshSessions.get(sessionId);
+  if (session?.ptyProcess) {
+    session.ptyProcess.resize(clamp(cols, 20, 300), clamp(rows, 5, 120));
   }
 });
 
 ipcMain.handle('ssh:stop', (_event, sessionId) => {
   const session = sshSessions.get(sessionId);
-  if (session?.child && !session.child.killed) {
+  if (session?.ptyProcess) {
+    session.ptyProcess.kill();
+  } else if (session?.child && !session.child.killed) {
     session.child.kill();
   }
   session?.cleanup?.();
@@ -1514,17 +1743,18 @@ ipcMain.handle('database:relation-rows', async (_event, { connection, tableName,
   return { rows };
 });
 
-ipcMain.handle('database:table', async (_event, { connection, tableName, filter, limit, columnFilter }) => {
-  const [columns, rows, outgoingKeys, incomingKeys] = await Promise.all([
+ipcMain.handle('database:table', async (_event, { connection, tableName, filter, limit, columnFilter, sort }) => {
+  const [columns, data, outgoingKeys, incomingKeys] = await Promise.all([
     getColumns(connection, tableName),
-    getData(connection, tableName, filter, limit, columnFilter),
+    getData(connection, tableName, filter, limit, columnFilter, sort),
     getOutgoingForeignKeys(connection, tableName),
     getIncomingForeignKeys(connection, tableName)
   ]);
 
   return {
     columns,
-    rows,
+    rows: data.rows,
+    query: data.query,
     relations: {
       outgoing: outgoingKeys,
       incoming: incomingKeys

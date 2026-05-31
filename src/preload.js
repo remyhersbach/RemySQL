@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('sqlBase', {
+  getAppInfo: () => ipcRenderer.invoke('app:info'),
+  checkForUpdates: () => ipcRenderer.invoke('app:check-updates'),
+  openExternal: (url) => ipcRenderer.invoke('app:open-external', url),
   listConnections: () => ipcRenderer.invoke('connections:list'),
   addConnection: (connection) => ipcRenderer.invoke('connections:add', connection),
   removeConnection: (connectionId) => ipcRenderer.invoke('connections:remove', connectionId),
@@ -12,6 +15,7 @@ contextBridge.exposeInMainWorld('sqlBase', {
   startSsh: (connection) => ipcRenderer.invoke('ssh:start', connection),
   openSshInTerminal: (connection) => ipcRenderer.invoke('ssh:open-terminal', connection),
   writeSsh: (payload) => ipcRenderer.invoke('ssh:write', payload),
+  resizeSsh: (payload) => ipcRenderer.invoke('ssh:resize', payload),
   stopSsh: (sessionId) => ipcRenderer.invoke('ssh:stop', sessionId),
   loadSchema: (connection) => ipcRenderer.invoke('database:schema', connection),
   loadTable: (payload) => ipcRenderer.invoke('database:table', payload),

@@ -5,6 +5,7 @@ const state = {
   tabs: [],
   activeTabId: null,
   tablePayloadByTab: new Map(),
+  tableLoadSeqByTab: new Map(),
   selectedRowsByTab: new Map(),
   anchorRowByTab: new Map(),
   relationLookupByTab: new Map(),
@@ -20,11 +21,15 @@ const state = {
   copiedRows: null,
   draggingConnectionId: null,
   focusGroupId: null,
-  openColorConnectionId: null,
   contextMenuConnectionId: null,
   sshSessionByTab: new Map(),
   sshOutputByTab: new Map(),
+  sshTerminalByTab: new Map(),
+  sshFitByTab: new Map(),
+  sshResizeObserverByTab: new Map(),
   sortByTab: new Map(),
+  sortTimerByTab: new Map(),
+  editSelectionSnapshot: null,
   sidebarFilterOpen: false
 };
 
@@ -81,11 +86,7 @@ const elements = {
   emptyState: document.querySelector('#emptyState'),
   tableView: document.querySelector('#tableView'),
   sshView: document.querySelector('#sshView'),
-  sshTerminalOutput: document.querySelector('#sshTerminalOutput'),
-  sshTerminalForm: document.querySelector('#sshTerminalForm'),
-  sshTerminalInput: document.querySelector('#sshTerminalInput'),
-  sshOpenTerminalButton: document.querySelector('#sshOpenTerminalButton'),
-  sshDisconnectButton: document.querySelector('#sshDisconnectButton'),
+  sshTerminalPane: document.querySelector('#sshTerminalPane'),
   dataModeButton: document.querySelector('#dataModeButton'),
   structureModeButton: document.querySelector('#structureModeButton'),
   filterInput: document.querySelector('#filterInput'),
@@ -101,6 +102,9 @@ const elements = {
   filterValueToDateBtn: document.querySelector('#filterValueToDateBtn'),
   limitInput: document.querySelector('#limitInput'),
   tableMeta: document.querySelector('#tableMeta'),
+  dataPanel: document.querySelector('.data-panel'),
+  tableLoader: document.querySelector('#tableLoader'),
+  tableLoaderLabel: document.querySelector('#tableLoaderLabel'),
   dataTable: document.querySelector('#dataTable'),
   relationsList: document.querySelector('#relationsList'),
   relationsPanel: document.querySelector('#relationsPanel'),
@@ -131,6 +135,13 @@ const elements = {
   cellViewerValue: document.querySelector('#cellViewerValue'),
   cellViewerClose: document.querySelector('#cellViewerClose'),
   cellViewerCopy: document.querySelector('#cellViewerCopy'),
+  releaseDialog: document.querySelector('#releaseDialog'),
+  releaseDialogBackdrop: document.querySelector('#releaseDialogBackdrop'),
+  releaseDialogClose: document.querySelector('#releaseDialogClose'),
+  releaseDialogEyebrow: document.querySelector('#releaseDialogEyebrow'),
+  releaseDialogTitle: document.querySelector('#releaseDialogTitle'),
+  releaseDialogBody: document.querySelector('#releaseDialogBody'),
+  releaseDialogActions: document.querySelector('#releaseDialogActions'),
   readOnlyBadge: document.querySelector('#readOnlyBadge'),
   connectionReadOnlyRow: document.querySelector('#connectionReadOnlyRow'),
   connectionReadOnlyCheckbox: document.querySelector('#connectionReadOnlyCheckbox'),
@@ -326,6 +337,186 @@ function closeErrorDialog() {
   elements.errorDialogBackdrop.hidden = true;
 }
 
+const releaseDialogState = { onClose: null, closeMode: null };
+
+function renderBasicMarkdown(markdown) {
+  const lines = String(markdown || '').split(/\r?\n/);
+  const html = [];
+  let inList = false;
+  let inCode = false;
+  const closeList = () => {
+    if (inList) {
+      html.push('</ul>');
+      inList = false;
+    }
+  };
+
+  for (const line of lines) {
+    if (line.trim().startsWith('```')) {
+      closeList();
+      inCode = !inCode;
+      html.push(inCode ? '<pre><code>' : '</code></pre>');
+      continue;
+    }
+
+    if (inCode) {
+      html.push(`${escapeHtml(line)}\n`);
+      continue;
+    }
+
+    const heading = line.match(/^(#{2,3})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      html.push(`<h${level}>${escapeHtml(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const listItem = line.match(/^\s*[-*]\s+(.+)$/);
+    if (listItem) {
+      if (!inList) {
+        html.push('<ul>');
+        inList = true;
+      }
+      html.push(`<li>${escapeHtml(listItem[1])}</li>`);
+      continue;
+    }
+
+    if (!line.trim()) {
+      closeList();
+      continue;
+    }
+
+    closeList();
+    html.push(`<p>${escapeHtml(line)}</p>`);
+  }
+
+  closeList();
+  if (inCode) html.push('</code></pre>');
+  return html.join('');
+}
+
+function getVersionChangelog(markdown, version) {
+  const escapedVersion = String(version || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`(^##\\s+v?${escapedVersion}(?:\\s+-\\s+.*)?$[\\s\\S]*?)(?=^##\\s+|(?![\\s\\S]))`, 'im');
+  const match = String(markdown || '').match(pattern);
+  return (match?.[1] || markdown || '').trim();
+}
+
+function closeReleaseDialog() {
+  elements.releaseDialog.hidden = true;
+  elements.releaseDialogBackdrop.hidden = true;
+  const onClose = releaseDialogState.onClose;
+  const closeMode = releaseDialogState.closeMode || 'close';
+  releaseDialogState.onClose = null;
+  releaseDialogState.closeMode = null;
+  onClose?.(closeMode);
+}
+
+function showReleaseDialog({ eyebrow, title, bodyMarkdown, actions = [] }) {
+  return new Promise((resolve) => {
+    releaseDialogState.onClose = resolve;
+    releaseDialogState.closeMode = 'close';
+    elements.releaseDialogEyebrow.textContent = eyebrow || '';
+    elements.releaseDialogTitle.textContent = title || '';
+    elements.releaseDialogBody.innerHTML = renderBasicMarkdown(bodyMarkdown || '');
+    elements.releaseDialogActions.innerHTML = '';
+
+    for (const action of actions) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = action.primary ? 'primary-button' : 'ghost-button';
+      button.textContent = action.label;
+      button.addEventListener('click', async () => {
+        releaseDialogState.closeMode = action.mode || action.label;
+        await action.onClick?.();
+        closeReleaseDialog();
+      });
+      elements.releaseDialogActions.appendChild(button);
+    }
+
+    if (!actions.length) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'primary-button';
+      button.textContent = 'OK';
+      button.addEventListener('click', () => {
+        releaseDialogState.closeMode = 'ok';
+        closeReleaseDialog();
+      });
+      elements.releaseDialogActions.appendChild(button);
+    }
+
+    elements.releaseDialog.hidden = false;
+    elements.releaseDialogBackdrop.hidden = false;
+    elements.releaseDialogClose.focus();
+  });
+}
+
+async function showChangelogIfNeeded(appInfo) {
+  const version = appInfo?.version;
+  if (!version || !appInfo?.changelog?.trim()) return;
+
+  const storageKey = 'remysql.changelogSeenVersion';
+  let seenVersion = null;
+  try { seenVersion = localStorage.getItem(storageKey); } catch {}
+  if (seenVersion === version) return;
+
+  await showReleaseDialog({
+    eyebrow: `RemySQL ${version}`,
+    title: 'Wat is er nieuw?',
+    bodyMarkdown: getVersionChangelog(appInfo.changelog, version),
+    actions: [{ label: 'Begrepen', primary: true, mode: 'seen' }]
+  });
+
+  try { localStorage.setItem(storageKey, version); } catch {}
+}
+
+async function showUpdateIfAvailable() {
+  let update = null;
+  try {
+    update = await window.sqlBase.checkForUpdates();
+  } catch {
+    return;
+  }
+
+  if (!update?.updateAvailable || !update.latestVersion) return;
+
+  const storageKey = `remysql.updateDismissed.${update.latestVersion}`;
+  let dismissed = null;
+  try { dismissed = localStorage.getItem(storageKey); } catch {}
+  if (dismissed === '1') return;
+
+  await showReleaseDialog({
+    eyebrow: `Update beschikbaar · ${update.currentVersion} → ${update.latestVersion}`,
+    title: update.releaseName || `RemySQL ${update.latestVersion}`,
+    bodyMarkdown: update.releaseNotes || `Er staat een nieuwe versie klaar op GitHub: ${update.latestVersion}.`,
+    actions: [
+      {
+        label: update.assetName ? `Download ${update.assetName}` : 'Open download',
+        primary: true,
+        mode: 'download',
+        onClick: () => window.sqlBase.openExternal(update.downloadUrl || update.releaseUrl)
+      },
+      { label: 'Later', mode: 'later' }
+    ]
+  });
+
+  try { localStorage.setItem(storageKey, '1'); } catch {}
+}
+
+async function initReleaseAnnouncements() {
+  let appInfo = null;
+  try {
+    appInfo = await window.sqlBase.getAppInfo();
+  } catch {
+    return;
+  }
+
+  await showChangelogIfNeeded(appInfo);
+  await showUpdateIfAvailable();
+}
+
 function getActiveConnection() {
   return state.connections.find((connection) => connection.id === state.activeConnectionId) || null;
 }
@@ -400,6 +591,96 @@ function formatPlainValue(value) {
   return String(value);
 }
 
+function quoteSqlIdentifier(connection, value) {
+  const text = String(value || '');
+  return connection?.type === 'mariadb'
+    ? `\`${text.replaceAll('`', '``')}\``
+    : `"${text.replaceAll('"', '""')}"`;
+}
+
+function quoteSqlLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function getActiveColumnFilter() {
+  const column = elements.filterColumnSelect.value;
+  const operator = elements.filterOperatorSelect.value;
+  if (!column) return null;
+  if (operator === 'BETWEEN') {
+    return state.filterValue.trim() && state.filterValueTo.trim()
+      ? { column, operator: 'BETWEEN', value: state.filterValue, valueTo: state.filterValueTo }
+      : null;
+  }
+  return state.filterValue.trim()
+    ? { column, operator, value: state.filterValue }
+    : null;
+}
+
+function buildTableSelectQuery(connection, tableName, columns, { filter, limit, columnFilter, sort }) {
+  const safeLimit = Math.max(1, Math.min(5000, Number(limit) || 100));
+  const validColumns = new Set((columns || []).map((column) => column.name));
+  const clauses = [];
+  const castType = connection?.type === 'mariadb' ? 'CHAR' : 'TEXT';
+
+  if (String(filter || '').trim()) {
+    const needle = quoteSqlLiteral(`%${String(filter).trim()}%`);
+    clauses.push(`(${[...validColumns]
+      .map((column) => `CAST(${quoteSqlIdentifier(connection, column)} AS ${castType}) LIKE ${needle}`)
+      .join(' OR ')})`);
+  }
+
+  if (columnFilter?.column && validColumns.has(columnFilter.column) && String(columnFilter.value ?? '').trim()) {
+    const col = quoteSqlIdentifier(connection, columnFilter.column);
+    const val = String(columnFilter.value).trim();
+    if (columnFilter.operator === 'BETWEEN' && String(columnFilter.valueTo ?? '').trim()) {
+      clauses.push(`${col} BETWEEN ${quoteSqlLiteral(val)} AND ${quoteSqlLiteral(String(columnFilter.valueTo).trim())}`);
+    } else if (columnFilter.operator === '!=') {
+      clauses.push(`${col} != ${quoteSqlLiteral(val)}`);
+    } else if (columnFilter.operator === 'LIKE') {
+      clauses.push(`CAST(${col} AS ${castType}) LIKE ${quoteSqlLiteral(`%${val}%`)}`);
+    } else {
+      clauses.push(`${col} = ${quoteSqlLiteral(val)}`);
+    }
+  }
+
+  const direction = String(sort?.direction || '').toLowerCase();
+  const order = sort?.column && validColumns.has(sort.column) && ['asc', 'desc'].includes(direction)
+    ? ` ORDER BY ${quoteSqlIdentifier(connection, sort.column)} ${direction.toUpperCase()}`
+    : '';
+  const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+
+  return `SELECT * FROM ${quoteSqlIdentifier(connection, tableName)}${where}${order} LIMIT ${safeLimit}`;
+}
+
+function formatExpandedCellValue(value) {
+  if (value === null || value === undefined) {
+    return 'NULL';
+  }
+
+  if (Array.isArray(value) || (typeof value === 'object' && value !== null)) {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+
+  const text = String(value);
+  const trimmed = text.trim();
+  if (!trimmed || !['{', '['].includes(trimmed[0])) {
+    return text;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed) || (typeof parsed === 'object' && parsed !== null)) {
+      return JSON.stringify(parsed, null, 2);
+    }
+  } catch {}
+
+  return text;
+}
+
 function getCurrentCellValue(rowIndex, columnName) {
   const tab = getActiveTab();
   const payload = state.tablePayloadByTab.get(tab?.id);
@@ -412,6 +693,60 @@ function getCurrentCellValue(rowIndex, columnName) {
   return payload.rows?.[rowIndex]?.[columnName];
 }
 
+function getCellEditTargetRows(tab, payload, rowIndex) {
+  const snapshot = state.editSelectionSnapshot;
+  const snapshotRows = snapshot?.tabId === tab.id
+    && snapshot.rowIndex === rowIndex
+    && Date.now() - snapshot.createdAt < 1200
+    ? snapshot.rows
+    : null;
+  const selectedRows = snapshotRows || [...(state.selectedRowsByTab.get(tab.id) || [])];
+  const targetRows = selectedRows.length > 1 && selectedRows.includes(rowIndex)
+    ? selectedRows
+    : [rowIndex];
+
+  return [...new Set(targetRows)]
+    .filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < (payload.rows?.length || 0))
+    .sort((left, right) => left - right);
+}
+
+function syncSelectedRowClasses(tab) {
+  for (const el of elements.dataTable.querySelectorAll('.selected-row')) {
+    el.classList.remove('selected-row');
+  }
+
+  const currentSelected = state.selectedRowsByTab.get(tab.id) || new Set();
+  for (const idx of currentSelected) {
+    elements.dataTable.querySelector(`tr[data-row-index="${idx}"]`)?.classList.add('selected-row');
+  }
+}
+
+function applyCellEditValue(tab, payload, rowIndex, columnName, value, sourceInputValue, targetRowsOverride = null) {
+  const targetRows = (targetRowsOverride || getCellEditTargetRows(tab, payload, rowIndex))
+    .filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < (payload.rows?.length || 0));
+  if (targetRows.length <= 1 && value === sourceInputValue) {
+    return 0;
+  }
+
+  if (targetRows.length > 1) {
+    state.selectedRowsByTab.set(tab.id, new Set(targetRows));
+    syncSelectedRowClasses(tab);
+  }
+
+  const edits = state.editsByTab.get(tab.id) || new Map();
+  for (const targetRowIndex of targetRows) {
+    edits.set(`${targetRowIndex}:${columnName}`, { value, error: null });
+  }
+  state.editsByTab.set(tab.id, edits);
+  elements.pendingActions.hidden = false;
+
+  if (targetRows.length > 1) {
+    showToast(`${targetRows.length} rijen aangepast in ${columnName}`);
+  }
+
+  return targetRows.length;
+}
+
 function openCellViewer(rowIndex, columnName) {
   const tab = getActiveTab();
   const payload = state.tablePayloadByTab.get(tab?.id);
@@ -421,7 +756,7 @@ function openCellViewer(rowIndex, columnName) {
   const value = getCurrentCellValue(rowIndex, columnName);
   elements.cellViewerTitle.textContent = columnName;
   elements.cellViewerMeta.textContent = `${tab.tableName} · rij ${rowIndex + 1}${column.type ? ` · ${column.type}` : ''}`;
-  elements.cellViewerValue.value = formatPlainValue(value);
+  elements.cellViewerValue.value = formatExpandedCellValue(value);
   elements.cellViewerBackdrop.hidden = false;
   elements.cellViewerDialog.hidden = false;
   elements.cellViewerValue.focus();
@@ -443,6 +778,17 @@ async function copyCellViewerValue() {
     document.execCommand('copy');
   }
   showToast('Celinhoud gekopieerd');
+}
+
+function setTableLoading(isLoading, label = 'Laden...') {
+  elements.dataPanel?.classList.toggle('is-loading', isLoading);
+  elements.dataPanel?.setAttribute('aria-busy', isLoading ? 'true' : 'false');
+  if (elements.tableLoader) {
+    elements.tableLoader.hidden = !isLoading;
+  }
+  if (elements.tableLoaderLabel && isLoading) {
+    elements.tableLoaderLabel.textContent = label;
+  }
 }
 
 function isHexColor(value) {
@@ -736,14 +1082,23 @@ async function removeConnection(connectionId) {
     if (sshSessionId) {
       window.sqlBase.stopSsh(sshSessionId);
     }
+    clearTimeout(state.sortTimerByTab.get(tab.id));
+    state.sortTimerByTab.delete(tab.id);
+    state.tablePayloadByTab.delete(tab.id);
+    state.tableLoadSeqByTab.delete(tab.id);
     state.sshSessionByTab.delete(tab.id);
     state.sshOutputByTab.delete(tab.id);
+    disposeSshTerminal(tab.id);
   }
   state.connections = await window.sqlBase.removeConnection(connectionId);
   state.schemaByConnection.delete(connectionId);
   state.tabs = state.tabs.filter((tab) => tab.connectionId !== connectionId);
   for (const tabId of [...state.selectedRowsByTab.keys()]) {
     if (!state.tabs.some((tab) => tab.id === tabId)) {
+      clearTimeout(state.sortTimerByTab.get(tabId));
+      state.sortTimerByTab.delete(tabId);
+      state.tablePayloadByTab.delete(tabId);
+      state.tableLoadSeqByTab.delete(tabId);
       state.selectedRowsByTab.delete(tabId);
       state.anchorRowByTab.delete(tabId);
       state.relationLookupByTab.delete(tabId);
@@ -790,7 +1145,10 @@ async function disconnectConnection(connectionId) {
     if (sshSessionId) {
       await window.sqlBase.stopSsh(sshSessionId);
     }
+    clearTimeout(state.sortTimerByTab.get(tab.id));
+    state.sortTimerByTab.delete(tab.id);
     state.tablePayloadByTab.delete(tab.id);
+    state.tableLoadSeqByTab.delete(tab.id);
     state.selectedRowsByTab.delete(tab.id);
     state.anchorRowByTab.delete(tab.id);
     state.relationLookupByTab.delete(tab.id);
@@ -798,6 +1156,7 @@ async function disconnectConnection(connectionId) {
     state.editsByTab.delete(tab.id);
     state.sshSessionByTab.delete(tab.id);
     state.sshOutputByTab.delete(tab.id);
+    disposeSshTerminal(tab.id);
   }
 
   state.tabs = state.tabs.filter((tab) => tab.connectionId !== connectionId);
@@ -867,8 +1226,11 @@ async function openSshConnection(connection) {
     if (!state.sshSessionByTab.has(existing.id)) {
       state.sshOutputByTab.set(existing.id, `${state.sshOutputByTab.get(existing.id) || ''}\nOpnieuw verbinden met ${getConnectionSummary(connection)}...\n`);
       try {
-        const { sessionId } = await window.sqlBase.startSsh(connection);
+        renderSshView();
+        const { cols, rows } = getSshTerminalSize(existing.id);
+        const { sessionId } = await window.sqlBase.startSsh({ connection, cols, rows });
         state.sshSessionByTab.set(existing.id, sessionId);
+        fitSshTerminal(existing.id);
         renderSshView();
       } catch (error) {
         state.sshOutputByTab.set(existing.id, `${state.sshOutputByTab.get(existing.id) || ''}${error.message}\n`);
@@ -894,8 +1256,11 @@ async function openSshConnection(connection) {
   render();
 
   try {
-    const { sessionId } = await window.sqlBase.startSsh(connection);
+    renderSshView();
+    const { cols, rows } = getSshTerminalSize(tab.id);
+    const { sessionId } = await window.sqlBase.startSsh({ connection, cols, rows });
     state.sshSessionByTab.set(tab.id, sessionId);
+    fitSshTerminal(tab.id);
     renderSshView();
   } catch (error) {
     state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}${error.message}\n`);
@@ -908,11 +1273,158 @@ function getActiveSshSessionId() {
   return tab?.type === 'ssh' ? state.sshSessionByTab.get(tab.id) : null;
 }
 
+function getSshTerminalSize(tabId) {
+  const terminal = state.sshTerminalByTab.get(tabId);
+  const size = fitSshTerminal(tabId);
+  return {
+    cols: size?.cols || terminal?.cols || 100,
+    rows: size?.rows || terminal?.rows || 30
+  };
+}
+
+function disposeSshTerminal(tabId) {
+  state.sshResizeObserverByTab.get(tabId)?.disconnect();
+  state.sshResizeObserverByTab.delete(tabId);
+  state.sshFitByTab.delete(tabId);
+  state.sshTerminalByTab.get(tabId)?.dispose();
+  state.sshTerminalByTab.delete(tabId);
+}
+
+function fitSshTerminal(tabId) {
+  const terminal = state.sshTerminalByTab.get(tabId);
+  const fitAddon = state.sshFitByTab.get(tabId);
+  if (!terminal || !fitAddon || elements.sshView.hidden) return null;
+
+  fitAddon.fit();
+  const sessionId = state.sshSessionByTab.get(tabId);
+  if (sessionId) {
+    window.sqlBase.resizeSsh({ sessionId, cols: terminal.cols, rows: terminal.rows });
+  }
+  return { cols: terminal.cols, rows: terminal.rows };
+}
+
+function getTerminalConstructor() {
+  if (typeof window.Terminal === 'function') {
+    return window.Terminal;
+  }
+  if (typeof window.Terminal?.Terminal === 'function') {
+    return window.Terminal.Terminal;
+  }
+  return null;
+}
+
+function getFitAddonConstructor() {
+  if (typeof window.FitAddon === 'function') {
+    return window.FitAddon;
+  }
+  if (typeof window.FitAddon?.FitAddon === 'function') {
+    return window.FitAddon.FitAddon;
+  }
+  return null;
+}
+
+function ensureSshTerminal(tab) {
+  let terminal = state.sshTerminalByTab.get(tab.id);
+  if (terminal) {
+    if (!elements.sshTerminalPane.contains(terminal.element)) {
+      elements.sshTerminalPane.innerHTML = '';
+      elements.sshTerminalPane.appendChild(terminal.element);
+    }
+    setTimeout(() => {
+      fitSshTerminal(tab.id);
+      terminal.focus();
+    }, 0);
+    return terminal;
+  }
+
+  const TerminalConstructor = getTerminalConstructor();
+  const FitAddonConstructor = getFitAddonConstructor();
+
+  if (!TerminalConstructor || !FitAddonConstructor) {
+    elements.sshTerminalPane.textContent = 'Terminal component kon niet worden geladen.';
+    return null;
+  }
+
+  terminal = new TerminalConstructor({
+    cursorBlink: true,
+    convertEol: false,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+    fontSize: 12,
+    lineHeight: 1.2,
+    scrollback: 5000,
+    theme: {
+      background: '#07111f',
+      foreground: '#d8e6f3',
+      cursor: '#f8fafc',
+      selectionBackground: '#1e3a5f',
+      black: '#0f172a',
+      red: '#ef4444',
+      green: '#22c55e',
+      yellow: '#eab308',
+      blue: '#38bdf8',
+      magenta: '#a78bfa',
+      cyan: '#22d3ee',
+      white: '#e2e8f0',
+      brightBlack: '#64748b',
+      brightRed: '#f87171',
+      brightGreen: '#4ade80',
+      brightYellow: '#fde047',
+      brightBlue: '#7dd3fc',
+      brightMagenta: '#c4b5fd',
+      brightCyan: '#67e8f9',
+      brightWhite: '#ffffff'
+    }
+  });
+  const fitAddon = new FitAddonConstructor();
+  terminal.loadAddon(fitAddon);
+
+  elements.sshTerminalPane.innerHTML = '';
+  terminal.open(elements.sshTerminalPane);
+  state.sshTerminalByTab.set(tab.id, terminal);
+  state.sshFitByTab.set(tab.id, fitAddon);
+
+  terminal.onData((data) => {
+    const sessionId = state.sshSessionByTab.get(tab.id);
+    if (sessionId) {
+      window.sqlBase.writeSsh({ sessionId, data });
+    }
+  });
+  terminal.onResize(({ cols, rows }) => {
+    const sessionId = state.sshSessionByTab.get(tab.id);
+    if (sessionId) {
+      window.sqlBase.resizeSsh({ sessionId, cols, rows });
+    }
+  });
+
+  const observer = new ResizeObserver(() => fitSshTerminal(tab.id));
+  observer.observe(elements.sshTerminalPane);
+  state.sshResizeObserverByTab.set(tab.id, observer);
+
+  const bufferedOutput = state.sshOutputByTab.get(tab.id);
+  if (bufferedOutput) {
+    terminal.write(bufferedOutput.replace(/\n/g, '\r\n'));
+    state.sshOutputByTab.set(tab.id, '');
+  }
+
+  setTimeout(() => {
+    fitSshTerminal(tab.id);
+    terminal.focus();
+  }, 0);
+
+  return terminal;
+}
+
 function appendSshOutput(sessionId, data) {
   const tab = state.tabs.find((item) => state.sshSessionByTab.get(item.id) === sessionId);
   if (!tab) return;
 
-  state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}${data}`);
+  const terminal = state.sshTerminalByTab.get(tab.id);
+  if (terminal) {
+    terminal.write(data);
+  } else {
+    state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}${data}`);
+  }
+
   if (state.activeTabId === tab.id) {
     renderSshView();
   }
@@ -930,8 +1442,7 @@ function renderSshView() {
   elements.backupButton.disabled = true;
   elements.workspaceTitle.textContent = tab.tableName;
   elements.activeConnectionLabel.textContent = connection ? `SSH · ${getConnectionSummary(connection)}` : 'SSH';
-  elements.sshTerminalOutput.textContent = state.sshOutputByTab.get(tab.id) || '';
-  elements.sshTerminalOutput.scrollTop = elements.sshTerminalOutput.scrollHeight;
+  ensureSshTerminal(tab);
 }
 
 async function openTable(connection, tableName) {
@@ -979,26 +1490,38 @@ async function loadActiveTable() {
     return null;
   }
 
+  const loadSeq = (state.tableLoadSeqByTab.get(tab.id) || 0) + 1;
+  state.tableLoadSeqByTab.set(tab.id, loadSeq);
+  setTableLoading(true);
+
   try {
+    const sort = state.sortByTab.get(tab.id) || null;
+    const columnFilter = getActiveColumnFilter();
     const payload = await window.sqlBase.loadTable({
       connection,
       tableName: tab.tableName,
       filter: elements.filterInput.value,
       limit: elements.limitInput.value,
-      columnFilter: (() => {
-        const column = elements.filterColumnSelect.value;
-        const operator = elements.filterOperatorSelect.value;
-        if (!column) return null;
-        if (operator === 'BETWEEN') {
-          return state.filterValue.trim() && state.filterValueTo.trim()
-            ? { column, operator: 'BETWEEN', value: state.filterValue, valueTo: state.filterValueTo }
-            : null;
-        }
-        return state.filterValue.trim()
-          ? { column, operator, value: state.filterValue }
-          : null;
-      })()
+      sort,
+      columnFilter
     });
+    if (state.tableLoadSeqByTab.get(tab.id) !== loadSeq) {
+      return null;
+    }
+    if (sort?.column && sort?.direction && payload.columns?.some((column) => column.name === sort.column)) {
+      const query = buildTableSelectQuery(connection, tab.tableName, payload.columns, {
+        filter: elements.filterInput.value,
+        limit: elements.limitInput.value,
+        columnFilter,
+        sort
+      });
+      const result = await window.sqlBase.runSql({ connection, sql: query });
+      if (state.tableLoadSeqByTab.get(tab.id) !== loadSeq) {
+        return null;
+      }
+      payload.rows = result.rows || [];
+      payload.query = query;
+    }
     state.tablePayloadByTab.set(tab.id, payload);
     state.relationLookupByTab.delete(tab.id);
     state.pendingRowsByTab.delete(tab.id);
@@ -1016,21 +1539,80 @@ async function loadActiveTable() {
     renderTableView();
     return payload;
   } catch (error) {
-    showToast(error.message);
+    if (state.tableLoadSeqByTab.get(tab.id) === loadSeq) {
+      showToast(error.message);
+    }
     return null;
+  } finally {
+    if (state.tableLoadSeqByTab.get(tab.id) === loadSeq) {
+      setTableLoading(false);
+    }
+  }
+}
+
+async function loadSortedActiveTable() {
+  const tab = getActiveTab();
+  const connection = state.connections.find((item) => item.id === tab?.connectionId);
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  const sort = state.sortByTab.get(tab?.id);
+  if (!tab || !connection || !payload?.columns?.length || !sort?.column || !sort?.direction) {
+    return loadActiveTable();
+  }
+
+  const query = buildTableSelectQuery(connection, tab.tableName, payload.columns, {
+    filter: elements.filterInput.value,
+    limit: elements.limitInput.value,
+    columnFilter: getActiveColumnFilter(),
+    sort
+  });
+
+  const loadSeq = (state.tableLoadSeqByTab.get(tab.id) || 0) + 1;
+  state.tableLoadSeqByTab.set(tab.id, loadSeq);
+  setTableLoading(true, 'Sorteren...');
+
+  try {
+    const result = await window.sqlBase.runSql({ connection, sql: query });
+    if (state.tableLoadSeqByTab.get(tab.id) !== loadSeq) {
+      return null;
+    }
+
+    state.tablePayloadByTab.set(tab.id, {
+      ...payload,
+      rows: result.rows || [],
+      query,
+      isSqlResult: false
+    });
+    state.relationLookupByTab.delete(tab.id);
+    state.selectedRowsByTab.delete(tab.id);
+    state.anchorRowByTab.delete(tab.id);
+    renderTableView();
+    return state.tablePayloadByTab.get(tab.id);
+  } catch (error) {
+    if (state.tableLoadSeqByTab.get(tab.id) === loadSeq) {
+      showToast(error.message);
+    }
+    return null;
+  } finally {
+    if (state.tableLoadSeqByTab.get(tab.id) === loadSeq) {
+      setTableLoading(false);
+    }
   }
 }
 
 function closeTab(tabId) {
   const index = state.tabs.findIndex((tab) => tab.id === tabId);
+  clearTimeout(state.sortTimerByTab.get(tabId));
+  state.sortTimerByTab.delete(tabId);
   const sshSessionId = state.sshSessionByTab.get(tabId);
   if (sshSessionId) {
     window.sqlBase.stopSsh(sshSessionId);
   }
   state.tabs = state.tabs.filter((tab) => tab.id !== tabId);
   state.tablePayloadByTab.delete(tabId);
+  state.tableLoadSeqByTab.delete(tabId);
   state.sshSessionByTab.delete(tabId);
   state.sshOutputByTab.delete(tabId);
+  disposeSshTerminal(tabId);
   state.selectedRowsByTab.delete(tabId);
   state.anchorRowByTab.delete(tabId);
   state.relationLookupByTab.delete(tabId);
@@ -1074,7 +1656,7 @@ function inputValueToDbValue(value, inputType) {
 
 const datePickerState = { onCommit: null, onCancel: null };
 
-function openDatePicker(td, tab, editKey, rawInputValue, inputType, originalHtml, originalClassName) {
+function openDatePicker(td, tab, payload, rowIndex, columnName, rawInputValue, inputType, originalHtml, originalClassName, targetRowsOverride = null) {
   let done = false;
 
   td.classList.add('editing');
@@ -1109,20 +1691,15 @@ function openDatePicker(td, tab, editKey, rawInputValue, inputType, originalHtml
 
     const val = inputValueToDbValue(elements.datePickerInput.value, inputType);
     const original = rawInputValue === null || rawInputValue === undefined ? '' : String(rawInputValue);
+    const changedRows = applyCellEditValue(tab, payload, rowIndex, columnName, val, original, targetRowsOverride);
 
-    if (val === original) {
+    if (!changedRows) {
       td.className = originalClassName;
       td.innerHTML = originalHtml;
       return;
     }
 
-    const edits = state.editsByTab.get(tab.id) || new Map();
-    edits.set(editKey, { value: val, error: null });
-    state.editsByTab.set(tab.id, edits);
-    td.classList.add('edited-cell');
-    td.title = val;
-    td.innerHTML = val === '' ? '<span class="muted-note">NULL</span>' : escapeHtml(val);
-    elements.pendingActions.hidden = false;
+    renderTableView();
   };
 
   const cancel = () => {
@@ -1266,7 +1843,6 @@ function renderConnections() {
     }
 
     const appendConnectionCard = (conn, parent) => {
-      const backgroundColor = isHexColor(conn.backgroundColor) ? conn.backgroundColor.toLowerCase() : '#ffffff';
       const isTerminal = conn.type === 'ssh';
       const typeLabel = isTerminal ? 'Terminal' : 'Database';
       const isActive = isConnectionActive(conn);
@@ -1279,18 +1855,6 @@ function renderConnections() {
         item.classList.add('has-custom-color');
         item.style.setProperty('--connection-bg', conn.backgroundColor);
       }
-      const colorButtons = connectionColorOptions.map((option) => `
-        <button
-          type="button"
-          class="connection-color-swatch connection-color-option ${backgroundColor === option.value ? 'active' : ''}"
-          style="--swatch-color: ${option.value}"
-          data-connection-color-id="${escapeHtml(conn.id)}"
-          data-color="${escapeHtml(option.value)}"
-          title="${escapeHtml(option.label)}"
-          aria-label="${escapeHtml(option.label)} als achtergrond voor ${escapeHtml(conn.name)}"
-        ></button>
-      `).join('');
-      const paletteOpen = state.openColorConnectionId === conn.id;
       item.innerHTML = `
         <button
           type="button"
@@ -1311,25 +1875,6 @@ function renderConnections() {
             <span class="connection-path">${escapeHtml(getConnectionSummary(conn))}</span>
           </span>
         </button>
-        <div class="connection-actions">
-          <div class="connection-color-palette ${paletteOpen ? 'open' : ''}" aria-label="Achtergrondkleur kiezen">
-            <button
-              type="button"
-              class="connection-color-swatch connection-color-current"
-              style="--swatch-color: ${backgroundColor}"
-              data-toggle-color-menu-id="${escapeHtml(conn.id)}"
-              title="Kleur kiezen"
-              aria-label="Kleur kiezen voor ${escapeHtml(conn.name)}"
-            ></button>
-            ${colorButtons}
-          </div>
-          <button class="icon-button" data-edit-connection-id="${escapeHtml(conn.id)}" title="Bewerk connectie" aria-label="Bewerk connectie">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-          </button>
-          <button class="icon-button connection-delete-button" data-remove-connection-id="${escapeHtml(conn.id)}" title="Verwijder connectie" aria-label="Verwijder connectie">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-          </button>
-        </div>
       `;
       parent.appendChild(item);
     };
@@ -1501,27 +2046,7 @@ function renderDataTable(payload) {
   const rows = payload.rows || [];
   const selectedRows = state.selectedRowsByTab.get(tab?.id) || new Set();
   const edits = state.editsByTab.get(tab?.id) || new Map();
-  const sort = state.sortByTab.get(tab?.id);
-
-  const sortedItems = (() => {
-    const items = rows.map((row, i) => ({ row, originalIndex: i }));
-    if (sort?.column && sort?.direction) {
-      items.sort((a, b) => {
-        const va = a.row[sort.column];
-        const vb = b.row[sort.column];
-        if (va === null && vb === null) return 0;
-        if (va === null) return sort.direction === 'asc' ? 1 : -1;
-        if (vb === null) return sort.direction === 'asc' ? -1 : 1;
-        const na = Number(va);
-        const nb = Number(vb);
-        if (!isNaN(na) && !isNaN(nb)) return sort.direction === 'asc' ? na - nb : nb - na;
-        const sa = String(va).toLowerCase();
-        const sb = String(vb).toLowerCase();
-        return sort.direction === 'asc' ? sa.localeCompare(sb) : sb.localeCompare(sa);
-      });
-    }
-    return items;
-  })();
+  const sort = payload.isSqlResult ? null : state.sortByTab.get(tab?.id);
 
   const renderCellViewButton = (rowIndex, columnName) => `
     <button
@@ -1593,13 +2118,16 @@ function renderDataTable(payload) {
       <tr>${columns.map((column) => {
         const dir = sort?.column === column.name ? sort.direction : null;
         const arrow = dir === 'asc' ? '▲' : dir === 'desc' ? '▼' : '⇅';
-        return `<th data-sort-col="${escapeHtml(column.name)}" class="${dir ? `sorted-${dir}` : ''}">${escapeHtml(column.name)}<span class="sort-arrow">${arrow}</span></th>`;
+        return payload.isSqlResult
+          ? `<th>${escapeHtml(column.name)}</th>`
+          : `<th data-sort-col="${escapeHtml(column.name)}" class="${dir ? `sorted-${dir}` : ''}">${escapeHtml(column.name)}<span class="sort-arrow">${arrow}</span></th>`;
       }).join('')}</tr>
     </thead>
     <tbody>
       ${
-        sortedItems.length
-          ? sortedItems
+        rows.length
+          ? rows
+              .map((row, originalIndex) => ({ row, originalIndex }))
               .map(
                 ({ row, originalIndex }) => `
                   <tr class="${selectedRows.has(originalIndex) ? 'selected-row' : ''}" data-row-index="${originalIndex}">
@@ -1717,14 +2245,24 @@ function renderRelations(payload) {
       </article>
     `;
   };
-  const cards = [
-    ...outgoing.map((relation, index) => renderCard(relation, 'outgoing', index)),
-    ...incoming.map((relation, index) => renderCard(relation, 'incoming', index))
+  const relationItems = [
+    ...outgoing.map((relation, index) => ({ relation, kind: 'outgoing', index })),
+    ...incoming.map((relation, index) => ({ relation, kind: 'incoming', index }))
   ];
+  const cards = relationItems
+    .sort((a, b) => {
+      const aIsActive = lookup?.key === getRelationKey(a.kind, a.index);
+      const bIsActive = lookup?.key === getRelationKey(b.kind, b.index);
+      return Number(bIsActive) - Number(aIsActive);
+    })
+    .map(({ relation, kind, index }) => renderCard(relation, kind, index));
 
   elements.relationsList.innerHTML = cards.length
     ? cards.join('')
     : '<p class="muted-note">Geen foreign key-relaties gevonden voor deze tabel.</p>';
+  if (lookup && cards.length) {
+    elements.relationsList.scrollTop = 0;
+  }
 }
 
 function renderTableView() {
@@ -1745,21 +2283,23 @@ function renderTableView() {
   const edits = state.editsByTab.get(tab?.id);
   const hasPending = pendingRows.length > 0 || (edits && edits.size > 0);
   const isDataMode = state.mode === 'data';
+  const isSqlResult = Boolean(payload?.isSqlResult);
 
   elements.emptyState.hidden = Boolean(tab);
   elements.tableView.hidden = !tab;
   elements.sshView.hidden = true;
   const hasDatabaseConnection = Boolean(activeConnection && activeConnection.type !== 'ssh');
   elements.refreshButton.disabled = !hasDatabaseConnection;
-  elements.backupButton.disabled = !(tab?.type === 'database' && payload && hasDatabaseConnection);
+  elements.backupButton.disabled = !(tab?.type === 'database' && payload && hasDatabaseConnection && !isSqlResult);
   elements.tableActions.hidden = !tab || !payload;
-  elements.addRowButton.disabled = !isDataMode || isReadOnly;
+  elements.addRowButton.disabled = !isDataMode || isReadOnly || isSqlResult;
   elements.sqlButton.disabled = !tab || !payload || isReadOnly;
-  elements.pendingActions.hidden = !hasPending || !isDataMode;
+  elements.pendingActions.hidden = !hasPending || !isDataMode || isSqlResult;
   elements.readOnlyBadge.hidden = !isReadOnly || !tab;
   elements.filterArea.hidden = !isDataMode;
 
   if (!tab) {
+    setTableLoading(false);
     elements.workspaceTitle.textContent = activeConnection ? 'Kies een tabel' : 'Open of maak een connectie';
     elements.activeConnectionLabel.textContent = activeConnection?.name || 'Geen connectie';
     elements.dataTable.innerHTML = '';
@@ -1793,7 +2333,7 @@ function renderTableView() {
   } else {
     renderDataTable(payload);
   }
-  renderRelations(payload);
+  renderRelations(isSqlResult ? { ...payload, relations: { outgoing: [], incoming: [] } } : payload);
 }
 
 async function loadRelationLookup(kind, index) {
@@ -1965,15 +2505,42 @@ function openConnectionContextMenu(event, connectionId) {
   event.preventDefault();
   closeConnectionContextMenu();
   state.contextMenuConnectionId = connectionId;
+  const conn = state.connections.find((item) => item.id === connectionId);
+  const backgroundColor = isHexColor(conn?.backgroundColor) ? conn.backgroundColor.toLowerCase() : '#ffffff';
+  const colorButtons = connectionColorOptions.map((option) => `
+    <button
+      type="button"
+      class="connection-color-swatch connection-color-option ${backgroundColor === option.value ? 'active' : ''}"
+      style="--swatch-color: ${option.value}"
+      data-context-color="${escapeHtml(option.value)}"
+      title="${escapeHtml(option.label)}"
+      aria-label="${escapeHtml(option.label)} als achtergrond"
+    ></button>
+  `).join('');
 
   const menu = document.createElement('div');
   menu.className = 'connection-context-menu';
   menu.innerHTML = `
+    <button type="button" data-context-action="edit">
+      <span class="context-menu-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      </span>
+      Bewerk connectie
+    </button>
     <button type="button" data-context-action="duplicate">
       <span class="context-menu-icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
       </span>
       Dupliceer connectie
+    </button>
+    <div class="connection-context-colors" role="group" aria-label="Achtergrondkleur kiezen">
+      ${colorButtons}
+    </div>
+    <button type="button" data-context-action="remove" class="danger">
+      <span class="context-menu-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+      </span>
+      Verwijder connectie
     </button>
   `;
   document.body.appendChild(menu);
@@ -2089,7 +2656,7 @@ elements.connectionForm.addEventListener('keydown', (event) => {
   }
 });
 
-document.addEventListener('click', (event) => {
+document.addEventListener('click', async (event) => {
   const menu = event.target.closest('.connection-context-menu');
   if (!menu) {
     closeConnectionContextMenu();
@@ -2097,10 +2664,36 @@ document.addEventListener('click', (event) => {
   }
 
   const actionButton = event.target.closest('[data-context-action]');
+  const colorButton = event.target.closest('[data-context-color]');
+  if (colorButton && state.contextMenuConnectionId) {
+    const connectionId = state.contextMenuConnectionId;
+    const color = colorButton.dataset.contextColor;
+    closeConnectionContextMenu();
+    await updateConnectionBackground(connectionId, color);
+    return;
+  }
+
+  if (actionButton?.dataset.contextAction === 'edit' && state.contextMenuConnectionId) {
+    const connectionId = state.contextMenuConnectionId;
+    const conn = state.connections.find((item) => item.id === connectionId);
+    closeConnectionContextMenu();
+    if (conn) openConnectionForm(conn.type, conn);
+    return;
+  }
+
   if (actionButton?.dataset.contextAction === 'duplicate' && state.contextMenuConnectionId) {
     const connectionId = state.contextMenuConnectionId;
     closeConnectionContextMenu();
     duplicateConnection(connectionId);
+    return;
+  }
+
+  if (actionButton?.dataset.contextAction === 'remove' && state.contextMenuConnectionId) {
+    const connectionId = state.contextMenuConnectionId;
+    const conn = state.connections.find((item) => item.id === connectionId);
+    closeConnectionContextMenu();
+    if (conn && !confirm(`Connectie "${conn.name}" verwijderen?`)) return;
+    await removeConnection(connectionId);
   }
 });
 
@@ -2110,8 +2703,12 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-window.addEventListener('resize', closeConnectionContextMenu);
-window.addEventListener('blur', closeConnectionContextMenu);
+window.addEventListener('resize', () => {
+  closeConnectionContextMenu();
+});
+window.addEventListener('blur', () => {
+  closeConnectionContextMenu();
+});
 
 elements.connectionTypeSelect.addEventListener('change', () => {
   setConnectionFormType(elements.connectionTypeSelect.value);
@@ -2140,28 +2737,12 @@ elements.sidebarNav.addEventListener('click', (event) => {
 
 elements.connectionsList.addEventListener('click', async (event) => {
   const disconnectButton = event.target.closest('[data-disconnect-connection-id]');
-  const colorToggle = event.target.closest('[data-toggle-color-menu-id]');
-  const colorButton = event.target.closest('[data-connection-color-id][data-color]');
   const connectionButton = event.target.closest('[data-connection-id]');
   const tableButton = event.target.closest('[data-table-name]');
   const removeButton = event.target.closest('[data-remove-connection-id]');
-  const editButton = event.target.closest('[data-edit-connection-id]');
 
   if (disconnectButton) {
     await disconnectConnection(disconnectButton.dataset.disconnectConnectionId);
-    return;
-  }
-
-  if (colorToggle) {
-    const connectionId = colorToggle.dataset.toggleColorMenuId;
-    state.openColorConnectionId = state.openColorConnectionId === connectionId ? null : connectionId;
-    renderConnections();
-    return;
-  }
-
-  if (colorButton) {
-    state.openColorConnectionId = null;
-    await updateConnectionBackground(colorButton.dataset.connectionColorId, colorButton.dataset.color);
     return;
   }
 
@@ -2169,12 +2750,6 @@ elements.connectionsList.addEventListener('click', async (event) => {
     const conn = state.connections.find((c) => c.id === removeButton.dataset.removeConnectionId);
     if (conn && !confirm(`Connectie "${conn.name}" verwijderen?`)) return;
     await removeConnection(removeButton.dataset.removeConnectionId);
-    return;
-  }
-
-  if (editButton) {
-    const conn = state.connections.find((c) => c.id === editButton.dataset.editConnectionId);
-    if (conn) openConnectionForm(conn.type, conn);
     return;
   }
 
@@ -2307,8 +2882,6 @@ function updateConnectionDragTarget(event) {
 }
 
 elements.connectionsList.addEventListener('dragstart', (event) => {
-  if (event.target.closest('.connection-actions')) return;
-
   const item = event.target.closest('[data-connection-card-id]');
   if (!item) return;
 
@@ -2471,14 +3044,7 @@ function selectRow(tab, rowIndex, event = null) {
   }
 
   state.relationLookupByTab.delete(tab.id);
-
-  for (const el of elements.dataTable.querySelectorAll('.selected-row')) {
-    el.classList.remove('selected-row');
-  }
-  const currentSelected = state.selectedRowsByTab.get(tab.id);
-  for (const idx of currentSelected) {
-    elements.dataTable.querySelector(`tr[data-row-index="${idx}"]`)?.classList.add('selected-row');
-  }
+  syncSelectedRowClasses(tab);
 
   const anchor = state.anchorRowByTab.get(tab.id);
   elements.dataTable.querySelector(`tr[data-row-index="${anchor}"]`)?.scrollIntoView({ block: 'nearest' });
@@ -2604,8 +3170,15 @@ elements.dataTable.addEventListener('click', async (event) => {
     } else {
       state.sortByTab.set(tab.id, { column: col, direction: 'asc' });
     }
-    const payload = state.tablePayloadByTab.get(tab.id);
-    if (payload) renderDataTable(payload);
+    clearTimeout(state.sortTimerByTab.get(tab.id));
+    state.sortTimerByTab.delete(tab.id);
+    if (state.sortByTab.has(tab.id)) {
+      const payload = state.tablePayloadByTab.get(tab.id);
+      if (payload) renderDataTable(payload);
+      await loadSortedActiveTable();
+    } else {
+      await loadActiveTable();
+    }
     return;
   }
 
@@ -2625,7 +3198,26 @@ elements.dataTable.addEventListener('click', async (event) => {
 });
 
 elements.dataTable.addEventListener('mousedown', (e) => {
-  if (e.shiftKey && e.target.closest('tbody tr[data-row-index]')) e.preventDefault();
+  const row = e.target.closest('tbody tr[data-row-index]');
+  if (!row) return;
+
+  const tab = getActiveTab();
+  if (tab) {
+    const rowIndex = Number(row.dataset.rowIndex);
+    const existingSnapshot = state.editSelectionSnapshot;
+    const keepSnapshot = existingSnapshot?.tabId === tab.id
+      && existingSnapshot.rowIndex === rowIndex
+      && Date.now() - existingSnapshot.createdAt < 700;
+
+    if (!keepSnapshot) {
+      const selectedRows = state.selectedRowsByTab.get(tab.id);
+      state.editSelectionSnapshot = selectedRows?.size > 1 && selectedRows.has(rowIndex)
+        ? { tabId: tab.id, rowIndex, rows: [...selectedRows], createdAt: Date.now() }
+        : null;
+    }
+  }
+
+  if (e.shiftKey) e.preventDefault();
 });
 
 elements.addRowButton.addEventListener('click', () => {
@@ -2645,42 +3237,11 @@ elements.discardRowsButton.addEventListener('click', () => {
   renderTableView();
 });
 
-elements.sshTerminalForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
+elements.sshTerminalPane.addEventListener('mousedown', () => {
   const tab = getActiveTab();
-  const sessionId = getActiveSshSessionId();
-  const command = elements.sshTerminalInput.value;
-  if (!tab || !sessionId || !command) return;
-
-  state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}$ ${command}\n`);
-  elements.sshTerminalInput.value = '';
-  renderSshView();
-  await window.sqlBase.writeSsh({ sessionId, data: `${command}\n` });
-});
-
-elements.sshOpenTerminalButton.addEventListener('click', async () => {
-  const tab = getActiveTab();
-  const connection = state.connections.find((item) => item.id === tab?.connectionId);
-  if (!tab || tab.type !== 'ssh' || !connection) return;
-
-  try {
-    await window.sqlBase.openSshInTerminal(connection);
-    state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}\nGeopend in macOS Terminal. Voor password-auth vraagt Terminal zelf om je wachtwoord.\n`);
-    renderSshView();
-  } catch (error) {
-    showToast(error.message);
+  if (tab?.type === 'ssh') {
+    state.sshTerminalByTab.get(tab.id)?.focus();
   }
-});
-
-elements.sshDisconnectButton.addEventListener('click', async () => {
-  const tab = getActiveTab();
-  const sessionId = getActiveSshSessionId();
-  if (!tab || !sessionId) return;
-
-  await window.sqlBase.stopSsh(sessionId);
-  state.sshSessionByTab.delete(tab.id);
-  state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}\nVerbinding verbroken.\n`);
-  renderSshView();
 });
 
 elements.dataTable.addEventListener('dblclick', (event) => {
@@ -2694,6 +3255,7 @@ elements.dataTable.addEventListener('dblclick', (event) => {
   const tab = getActiveTab();
   const payload = state.tablePayloadByTab.get(tab?.id);
   if (!tab || !payload || state.mode !== 'data') return;
+  if (payload.isSqlResult) return;
 
   const activeConnection = state.connections.find((c) => c.id === tab.connectionId);
   if (activeConnection?.readOnly) return;
@@ -2702,6 +3264,12 @@ elements.dataTable.addEventListener('dblclick', (event) => {
   const colIndex = [...row.children].indexOf(td);
   const column = payload.columns[colIndex];
   if (!column) return;
+
+  const targetRows = getCellEditTargetRows(tab, payload, rowIndex);
+  if (targetRows.length > 1) {
+    state.selectedRowsByTab.set(tab.id, new Set(targetRows));
+    syncSelectedRowClasses(tab);
+  }
 
   const editKey = `${rowIndex}:${column.name}`;
   const existingEdit = state.editsByTab.get(tab.id)?.get(editKey);
@@ -2715,7 +3283,7 @@ elements.dataTable.addEventListener('dblclick', (event) => {
 
   const dateInputType = getDateInputType(column.type);
   if (dateInputType) {
-    openDatePicker(td, tab, editKey, inputValue, dateInputType, originalHtml, originalClassName);
+    openDatePicker(td, tab, payload, rowIndex, column.name, inputValue, dateInputType, originalHtml, originalClassName, targetRows);
     return;
   }
 
@@ -2737,21 +3305,15 @@ elements.dataTable.addEventListener('dblclick', (event) => {
     if (done) return;
     done = true;
     const val = input.value;
+    const changedRows = applyCellEditValue(tab, payload, rowIndex, column.name, val, inputValue, targetRows);
 
-    if (val === inputValue) {
+    if (!changedRows) {
       td.className = originalClassName;
       td.innerHTML = originalHtml;
       return;
     }
 
-    const edits = state.editsByTab.get(tab.id) || new Map();
-    edits.set(editKey, { value: val, error: null });
-    state.editsByTab.set(tab.id, edits);
-    td.classList.remove('editing');
-    td.classList.add('edited-cell');
-    td.title = val;
-    td.innerHTML = val === '' ? '<span class="muted-note">NULL</span>' : escapeHtml(val);
-    elements.pendingActions.hidden = false;
+    renderTableView();
   };
 
   input.addEventListener('keydown', (e) => {
@@ -2800,7 +3362,12 @@ window.sqlBase.onSshExit(({ sessionId, code }) => {
   const statusText = code
     ? `[SSH niet gelukt, exit-code ${code}]`
     : '[SSH sessie afgesloten]';
-  state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}\n${statusText}\n`);
+  const terminal = state.sshTerminalByTab.get(tab.id);
+  if (terminal) {
+    terminal.write(`\r\n${statusText}\r\n`);
+  } else {
+    state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}\r\n${statusText}\r\n`);
+  }
   if (state.activeTabId === tab.id) {
     renderSshView();
   }
@@ -2810,7 +3377,9 @@ function openSqlDialog() {
   const tab = getActiveTab();
   const connection = state.connections.find((c) => c.id === tab?.connectionId);
   if (!tab || !connection) return;
+  const payload = state.tablePayloadByTab.get(tab.id);
   elements.sqlDialogTitle.textContent = `${connection.name} · ${tab.tableName}`;
+  elements.sqlTextarea.value = payload?.query || `SELECT * FROM ${tab.tableName} LIMIT ${elements.limitInput.value || 100}`;
   elements.sqlResult.hidden = true;
   elements.sqlResult.innerHTML = '';
   elements.sqlDialog.hidden = false;
@@ -2823,6 +3392,47 @@ function closeSqlDialog() {
   elements.sqlBackdrop.hidden = true;
 }
 
+function isReadOnlySqlQuery(sql) {
+  return /^(select|with|pragma|show|describe|desc|explain)\b/i.test(String(sql || '').trim());
+}
+
+function getSqlResultColumns(rows) {
+  const names = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    for (const key of Object.keys(row)) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+      names.push(key);
+    }
+  }
+  return names.map((name) => ({ name, type: '', notnull: 0, dflt_value: null, pk: 0 }));
+}
+
+function renderSqlResultInActiveTab(tab, connection, sql, rows) {
+  state.tableLoadSeqByTab.set(tab.id, (state.tableLoadSeqByTab.get(tab.id) || 0) + 1);
+  clearTimeout(state.sortTimerByTab.get(tab.id));
+  state.sortTimerByTab.delete(tab.id);
+  state.tablePayloadByTab.set(tab.id, {
+    columns: getSqlResultColumns(rows),
+    rows: rows || [],
+    relations: { outgoing: [], incoming: [] },
+    label: getConnectionSummary(connection),
+    query: sql,
+    isSqlResult: true
+  });
+  state.sortByTab.delete(tab.id);
+  state.selectedRowsByTab.delete(tab.id);
+  state.anchorRowByTab.delete(tab.id);
+  state.relationLookupByTab.delete(tab.id);
+  state.pendingRowsByTab.delete(tab.id);
+  state.editsByTab.delete(tab.id);
+  state.mode = 'data';
+  setTableLoading(false);
+  closeSqlDialog();
+  renderTableView();
+}
+
 async function executeSql() {
   const tab = getActiveTab();
   const connection = state.connections.find((c) => c.id === tab?.connectionId);
@@ -2831,28 +3441,23 @@ async function executeSql() {
   if (!sql) return;
 
   elements.sqlRunButton.disabled = true;
-  elements.sqlResult.hidden = false;
-  elements.sqlResult.innerHTML = '<p class="sql-result-meta">Laden...</p>';
+  elements.sqlResult.hidden = true;
+  elements.sqlResult.innerHTML = '';
 
   try {
     const result = await window.sqlBase.runSql({ connection, sql });
-    if (result.rows.length > 0) {
-      const cols = Object.keys(result.rows[0]);
-      elements.sqlResult.innerHTML = `
-        <div class="table-scroll">
-          <table>
-            <thead><tr>${cols.map((c) => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
-            <tbody>${result.rows.map((row) => `
-              <tr>${cols.map((c) => `<td title="${escapeHtml(formatPlainValue(row[c]))}">${formatValue(row[c])}</td>`).join('')}</tr>
-            `).join('')}</tbody>
-          </table>
-        </div>
-        <p class="sql-result-meta">${result.rows.length} rij${result.rows.length !== 1 ? 'en' : ''} teruggegeven</p>
-      `;
+    const rows = result.rows || [];
+    if (rows.length > 0 || isReadOnlySqlQuery(sql)) {
+      renderSqlResultInActiveTab(tab, connection, sql, rows);
+      showToast(`${rows.length} rij${rows.length !== 1 ? 'en' : ''} teruggegeven`);
     } else if (result.affectedRows !== null) {
-      elements.sqlResult.innerHTML = `<p class="sql-result-meta">${result.affectedRows} rij${result.affectedRows !== 1 ? 'en' : ''} beïnvloed</p>`;
+      closeSqlDialog();
+      await loadActiveTable();
+      showToast(`${result.affectedRows} rij${result.affectedRows !== 1 ? 'en' : ''} beïnvloed`);
     } else {
-      elements.sqlResult.innerHTML = '<p class="sql-result-meta">Query uitgevoerd.</p>';
+      closeSqlDialog();
+      await loadActiveTable();
+      showToast('Query uitgevoerd');
     }
   } catch (error) {
     elements.sqlResult.hidden = true;
@@ -2883,6 +3488,14 @@ elements.cellViewerDialog.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     e.preventDefault();
     closeCellViewer();
+  }
+});
+elements.releaseDialogBackdrop.addEventListener('click', closeReleaseDialog);
+elements.releaseDialogClose.addEventListener('click', closeReleaseDialog);
+elements.releaseDialog.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeReleaseDialog();
   }
 });
 
@@ -2946,4 +3559,6 @@ document.addEventListener('keydown', (e) => {
 }, true);
 
 setConnectionFormType('mariadb');
-loadConnections();
+loadConnections().finally(() => {
+  initReleaseAnnouncements();
+});
