@@ -462,10 +462,19 @@ async function showChangelogIfNeeded(appInfo) {
   try { seenVersion = localStorage.getItem(storageKey); } catch {}
   if (seenVersion === version) return;
 
+  const versionChangelog = getVersionChangelog(appInfo.changelog, version);
+  const hasReleaseNotes = versionChangelog
+    .split(/\r?\n/)
+    .some((line) => /^\s*[-*]\s+\S/.test(line));
+  if (!hasReleaseNotes) {
+    try { localStorage.setItem(storageKey, version); } catch {}
+    return;
+  }
+
   await showReleaseDialog({
     eyebrow: `RemySQL ${version}`,
     title: 'Wat is er nieuw?',
-    bodyMarkdown: getVersionChangelog(appInfo.changelog, version),
+    bodyMarkdown: versionChangelog,
     actions: [{ label: 'Begrepen', primary: true, mode: 'seen' }]
   });
 

@@ -117,6 +117,13 @@ function getChangelogSection(version) {
   return nextSection === -1 ? rest : rest.slice(0, nextSection + 1);
 }
 
+function getChangelogBulletCount(version) {
+  return getChangelogSection(version)
+    .split(/\r?\n/)
+    .filter((line) => /^\s*[-*]\s+\S/.test(line))
+    .length;
+}
+
 async function prompt(question, fallback = '') {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -145,28 +152,24 @@ function openEditorIfAvailable(filePath) {
   return true;
 }
 
-async function requireChangelog(version) {
+async function prepareChangelog(version) {
   const inserted = insertChangelogTemplate(version);
   if (inserted) {
     console.log(`\nCHANGELOG.md template toegevoegd voor ${version}.`);
   }
 
   if (!openEditorIfAvailable(changelogPath)) {
-    console.log('\nPas CHANGELOG.md nu aan voor deze release.');
-    console.log(`Zet minimaal 1 echte changelog-bullet in de sectie voor ${version}.`);
-    await prompt('Druk op Enter zodra CHANGELOG.md klaar is.');
+    console.log('\nCHANGELOG.md is voorbereid voor deze release.');
+    console.log('Je kunt hem nu aanpassen, of leeg laten voor een release zonder changelog-notes.');
+    await prompt('Druk op Enter om door te gaan.');
   }
 
   const section = getChangelogSection(version);
   if (!section) {
     throw new Error(`CHANGELOG.md mist een sectie voor ${version}.`);
   }
-  const bulletCount = section
-    .split(/\r?\n/)
-    .filter((line) => /^\s*[-*]\s+\S/.test(line))
-    .length;
-  if (!bulletCount) {
-    throw new Error(`CHANGELOG.md mist changelog-bullets in de sectie voor ${version}.`);
+  if (!getChangelogBulletCount(version)) {
+    console.log(`Geen changelog-bullets voor ${version}; release gaat door zonder inhoudelijke changelog-notes.`);
   }
 }
 
@@ -236,7 +239,9 @@ async function getReleaseByTag(repo, tag) {
 }
 
 async function ensureGitHubRelease(repo, tag, version) {
-  const releaseBody = getChangelogSection(version).trim();
+  const releaseBody = getChangelogBulletCount(version)
+    ? getChangelogSection(version).trim()
+    : `Release ${tag}.`;
   const existing = await getReleaseByTag(repo, tag);
   if (existing) {
     return githubRequest(repo, `/releases/${existing.id}`, {
@@ -336,7 +341,7 @@ async function main() {
 
   console.log(`\nRelease voorbereiden: ${pkg.version} -> ${nextVersion}`);
   updatePackageVersions(nextVersion);
-  await requireChangelog(nextVersion);
+  await prepareChangelog(nextVersion);
 
   run('node', ['--check', 'src/main.js']);
   run('node', ['--check', 'src/renderer/app.js']);
