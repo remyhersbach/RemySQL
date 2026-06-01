@@ -1292,9 +1292,9 @@ select:focus {
 
 .table-controls {
   display: grid;
-  grid-template-columns: auto minmax(220px, 420px) 100px;
+  grid-template-columns: auto minmax(460px, 1fr) 74px;
   align-items: end;
-  gap: 11px;
+  gap: 16px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
 }
@@ -1342,7 +1342,7 @@ select:focus {
 .filter-input-row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
 }
 
 .filter-text-mode {
@@ -1357,13 +1357,14 @@ select:focus {
 .filter-column-mode {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   flex: 1;
   min-width: 0;
 }
 
-.filter-column-mode select { flex-shrink: 0; width: auto; }
-.filter-column-mode input  { flex: 1; min-width: 0; width: auto; }
+.filter-column-mode select { flex: 0 1 180px; width: auto; }
+.filter-column-mode #filterOperatorSelect { flex-basis: 150px; }
+.filter-column-mode input  { flex: 1 1 130px; min-width: 90px; width: auto; }
 
 .filter-date-btn {
   flex-shrink: 0;
@@ -2529,7 +2530,7 @@ th.sorted-desc .sort-arrow {
   }
 
   .table-controls {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: auto minmax(0, 1fr) 74px;
   }
 
   .limit-input {
