@@ -89,13 +89,10 @@ function insertChangelogTemplate(version) {
     `## ${version} - ${todayIsoDate()}`,
     '',
     '### Toegevoegd',
-    '- TODO',
     '',
     '### Gewijzigd',
-    '- TODO',
     '',
     '### Opgelost',
-    '- TODO',
     ''
   ].join('\n');
 
@@ -156,7 +153,7 @@ async function requireChangelog(version) {
 
   if (!openEditorIfAvailable(changelogPath)) {
     console.log('\nPas CHANGELOG.md nu aan voor deze release.');
-    console.log(`Zorg dat de sectie "## ${version} - ${todayIsoDate()}" geen TODO's meer bevat.`);
+    console.log(`Zet minimaal 1 echte changelog-bullet in de sectie voor ${version}.`);
     await prompt('Druk op Enter zodra CHANGELOG.md klaar is.');
   }
 
@@ -164,8 +161,12 @@ async function requireChangelog(version) {
   if (!section) {
     throw new Error(`CHANGELOG.md mist een sectie voor ${version}.`);
   }
-  if (/\bTODO\b/i.test(section)) {
-    throw new Error(`CHANGELOG.md bevat nog TODO in de sectie voor ${version}.`);
+  const bulletCount = section
+    .split(/\r?\n/)
+    .filter((line) => /^\s*[-*]\s+\S/.test(line))
+    .length;
+  if (!bulletCount) {
+    throw new Error(`CHANGELOG.md mist changelog-bullets in de sectie voor ${version}.`);
   }
 }
 
