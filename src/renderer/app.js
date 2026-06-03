@@ -11,13 +11,11 @@ const state = {
   relationLookupByTab: new Map(),
   pendingRowsByTab: new Map(),
   editsByTab: new Map(),
+  filterByTab: new Map(),
   sidebarView: 'connections',
   editingConnectionId: null,
   mode: 'data',
   filterTimer: null,
-  filterMode: 'text',
-  filterValue: '',
-  filterValueTo: '',
   copiedRows: null,
   draggingConnectionId: null,
   focusGroupId: null,
@@ -534,6 +532,31 @@ function getActiveTab() {
   return state.tabs.find((tab) => tab.id === state.activeTabId) || null;
 }
 
+function createDefaultFilterState() {
+  return {
+    mode: 'text',
+    text: '',
+    column: '',
+    operator: '=',
+    value: '',
+    valueTo: ''
+  };
+}
+
+function getFilterForTab(tabId, create = true) {
+  if (!tabId) {
+    return createDefaultFilterState();
+  }
+  if (!state.filterByTab.has(tabId) && create) {
+    state.filterByTab.set(tabId, createDefaultFilterState());
+  }
+  return state.filterByTab.get(tabId) || createDefaultFilterState();
+}
+
+function getActiveFilter() {
+  return getFilterForTab(getActiveTab()?.id);
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -559,15 +582,16 @@ function getHighlightTermForColumn(columnName) {
     return '';
   }
 
-  if (state.filterMode === 'column') {
-    const operator = elements.filterOperatorSelect.value;
-    const column = elements.filterColumnSelect.value;
+  const filter = getActiveFilter();
+  if (filter.mode === 'column') {
+    const operator = filter.operator;
+    const column = filter.column;
     return column === columnName && ['=', '!=', 'LIKE'].includes(operator)
-      ? String(state.filterValue || '').trim()
+      ? String(filter.value || '').trim()
       : '';
   }
 
-  return String(elements.filterInput.value || '').trim();
+  return String(filter.text || '').trim();
 }
 
 function formatValueWithHighlight(value, columnName) {
@@ -612,16 +636,18 @@ function quoteSqlLiteral(value) {
 }
 
 function getActiveColumnFilter() {
-  const column = elements.filterColumnSelect.value;
-  const operator = elements.filterOperatorSelect.value;
+  const filter = getActiveFilter();
+  if (filter.mode !== 'column') return null;
+  const column = filter.column;
+  const operator = filter.operator;
   if (!column) return null;
   if (operator === 'BETWEEN') {
-    return state.filterValue.trim() && state.filterValueTo.trim()
-      ? { column, operator: 'BETWEEN', value: state.filterValue, valueTo: state.filterValueTo }
+    return filter.value.trim() && filter.valueTo.trim()
+      ? { column, operator: 'BETWEEN', value: filter.value, valueTo: filter.valueTo }
       : null;
   }
-  return state.filterValue.trim()
-    ? { column, operator, value: state.filterValue }
+  return filter.value.trim()
+    ? { column, operator, value: filter.value }
     : null;
 }
 
@@ -1474,16 +1500,7 @@ async function openTable(connection, tableName) {
   state.tabs.push(tab);
   state.activeTabId = tab.id;
   state.mode = 'data';
-  state.filterMode = 'text';
-  state.filterValue = '';
-  state.filterValueTo = '';
-  elements.filterInput.value = '';
-  elements.filterColumnSelect.value = '';
-  elements.filterOperatorSelect.value = '=';
-  elements.filterValueInput.value = '';
-  elements.filterTextMode.hidden = false;
-  elements.filterColumnMode.hidden = true;
-  elements.filterModeToggle.classList.remove('active');
+  state.filterByTab.set(tab.id, createDefaultFilterState());
   render();
   await loadActiveTable();
 }
@@ -1504,12 +1521,13 @@ async function loadActiveTable() {
   setTableLoading(true);
 
   try {
+    const filter = getFilterForTab(tab.id);
     const sort = state.sortByTab.get(tab.id) || null;
     const columnFilter = getActiveColumnFilter();
     const payload = await window.sqlBase.loadTable({
       connection,
       tableName: tab.tableName,
-      filter: elements.filterInput.value,
+      filter: filter.mode === 'text' ? filter.text : '',
       limit: elements.limitInput.value,
       sort,
       columnFilter
@@ -1519,7 +1537,7 @@ async function loadActiveTable() {
     }
     if (sort?.column && sort?.direction && payload.columns?.some((column) => column.name === sort.column)) {
       const query = buildTableSelectQuery(connection, tab.tableName, payload.columns, {
-        filter: elements.filterInput.value,
+        filter: filter.mode === 'text' ? filter.text : '',
         limit: elements.limitInput.value,
         columnFilter,
         sort
@@ -1568,8 +1586,9 @@ async function loadSortedActiveTable() {
     return loadActiveTable();
   }
 
+  const filter = getFilterForTab(tab.id);
   const query = buildTableSelectQuery(connection, tab.tableName, payload.columns, {
-    filter: elements.filterInput.value,
+    filter: filter.mode === 'text' ? filter.text : '',
     limit: elements.limitInput.value,
     columnFilter: getActiveColumnFilter(),
     sort
@@ -1627,6 +1646,7 @@ function closeTab(tabId) {
   state.relationLookupByTab.delete(tabId);
   state.pendingRowsByTab.delete(tabId);
   state.editsByTab.delete(tabId);
+  state.filterByTab.delete(tabId);
 
   if (state.activeTabId === tabId) {
     state.activeTabId = state.tabs[Math.max(0, index - 1)]?.id || state.tabs[0]?.id || null;
@@ -1769,15 +1789,28 @@ function openFilterDatePicker(inputType, currentValue, anchorEl, onConfirm) {
 function getFilterColumnType() {
   const tab = getActiveTab();
   const payload = state.tablePayloadByTab.get(tab?.id);
-  const col = payload?.columns?.find((c) => c.name === elements.filterColumnSelect.value);
+  const col = payload?.columns?.find((c) => c.name === getActiveFilter().column);
   return col ? getDateInputType(col.type) : null;
 }
 
+function syncFilterControls() {
+  const filter = getActiveFilter();
+  elements.filterInput.value = filter.text;
+  elements.filterColumnSelect.value = filter.column;
+  elements.filterOperatorSelect.value = filter.operator;
+  elements.filterValueInput.value = filter.value;
+  elements.filterTextMode.hidden = filter.mode === 'column';
+  elements.filterColumnMode.hidden = filter.mode !== 'column';
+  elements.filterModeToggle.classList.toggle('active', filter.mode === 'column');
+  updateFilterValueUI();
+}
+
 function updateFilterValueUI() {
-  const col = elements.filterColumnSelect.value;
+  const filter = getActiveFilter();
+  const col = filter.column;
   const dateType = col ? getFilterColumnType() : null;
   const isDate = Boolean(dateType);
-  const operator = elements.filterOperatorSelect.value;
+  const operator = filter.operator;
   const isBetween = operator === 'BETWEEN';
 
   elements.filterValueInput.hidden = isDate;
@@ -1785,8 +1818,8 @@ function updateFilterValueUI() {
   elements.filterBetweenSep.hidden = !isBetween;
   elements.filterValueToDateBtn.hidden = !isBetween;
 
-  elements.filterValueDateBtn.textContent = state.filterValue || (isBetween ? 'Van…' : 'Kies datum…');
-  elements.filterValueToDateBtn.textContent = state.filterValueTo || 'Tot…';
+  elements.filterValueDateBtn.textContent = filter.value || (isBetween ? 'Van…' : 'Kies datum…');
+  elements.filterValueToDateBtn.textContent = filter.valueTo || 'Tot…';
 }
 
 elements.datePickerConfirm.addEventListener('click', () => datePickerState.onCommit?.());
@@ -2323,6 +2356,8 @@ function renderTableView() {
   elements.filterInput.disabled = !isDataMode;
 
   if (!payload) {
+    elements.filterColumnSelect.innerHTML = '<option value="">— kolom —</option>';
+    syncFilterControls();
     elements.tableMeta.textContent = 'Laden...';
     elements.dataTable.innerHTML = '';
     elements.relationsList.innerHTML = '';
@@ -2330,12 +2365,10 @@ function renderTableView() {
   }
 
   const cols = payload.columns || [];
-  const savedCol = elements.filterColumnSelect.value;
   elements.filterColumnSelect.innerHTML =
     '<option value="">— kolom —</option>' +
     cols.map((col) => `<option value="${escapeHtml(col.name)}">${escapeHtml(col.name)}</option>`).join('');
-  elements.filterColumnSelect.value = savedCol;
-  updateFilterValueUI();
+  syncFilterControls();
 
   if (state.mode === 'structure') {
     renderStructureTable(payload);
@@ -2960,65 +2993,79 @@ elements.structureModeButton.addEventListener('click', () => {
 });
 
 elements.filterInput.addEventListener('input', () => {
+  getActiveFilter().text = elements.filterInput.value;
   clearTimeout(state.filterTimer);
   state.filterTimer = setTimeout(loadActiveTable, 220);
 });
 
 elements.filterModeToggle.addEventListener('click', () => {
-  const toColumn = state.filterMode === 'text';
-  state.filterMode = toColumn ? 'column' : 'text';
-  elements.filterTextMode.hidden = toColumn;
-  elements.filterColumnMode.hidden = !toColumn;
-  elements.filterModeToggle.classList.toggle('active', toColumn);
+  const filter = getActiveFilter();
+  const toColumn = filter.mode === 'text';
+  filter.mode = toColumn ? 'column' : 'text';
   if (!toColumn) {
-    state.filterValue = '';
-    state.filterValueTo = '';
-    elements.filterColumnSelect.value = '';
-    elements.filterOperatorSelect.value = '=';
-    elements.filterValueInput.value = '';
+    filter.column = '';
+    filter.operator = '=';
+    filter.value = '';
+    filter.valueTo = '';
+    syncFilterControls();
     loadActiveTable();
   } else {
+    syncFilterControls();
     elements.filterColumnSelect.focus();
   }
 });
 
 elements.filterColumnSelect.addEventListener('change', () => {
-  state.filterValue = '';
-  state.filterValueTo = '';
-  elements.filterValueInput.value = '';
-  updateFilterValueUI();
+  const filter = getActiveFilter();
+  filter.column = elements.filterColumnSelect.value;
+  filter.value = '';
+  filter.valueTo = '';
+  syncFilterControls();
   loadActiveTable();
 });
 
 elements.filterOperatorSelect.addEventListener('change', () => {
-  state.filterValueTo = '';
-  updateFilterValueUI();
-  if (state.filterValue.trim()) loadActiveTable();
+  const filter = getActiveFilter();
+  filter.operator = elements.filterOperatorSelect.value;
+  filter.valueTo = '';
+  syncFilterControls();
+  if (filter.value.trim()) loadActiveTable();
 });
 
 elements.filterValueInput.addEventListener('input', () => {
-  state.filterValue = elements.filterValueInput.value;
+  const filter = getActiveFilter();
+  filter.value = elements.filterValueInput.value;
   clearTimeout(state.filterTimer);
-  if (elements.filterColumnSelect.value) state.filterTimer = setTimeout(loadActiveTable, 220);
+  if (filter.column) state.filterTimer = setTimeout(loadActiveTable, 220);
 });
 
 elements.filterValueDateBtn.addEventListener('click', () => {
   const dateType = getFilterColumnType();
   if (!dateType) return;
-  openFilterDatePicker(dateType, state.filterValue, elements.filterValueDateBtn, (val) => {
-    state.filterValue = val;
-    updateFilterValueUI();
-    if (elements.filterOperatorSelect.value !== 'BETWEEN' || state.filterValueTo.trim()) loadActiveTable();
+  const tabId = getActiveTab()?.id;
+  const filter = getActiveFilter();
+  openFilterDatePicker(dateType, filter.value, elements.filterValueDateBtn, (val) => {
+    const targetFilter = getFilterForTab(tabId);
+    targetFilter.value = val;
+    if (state.activeTabId === tabId) {
+      syncFilterControls();
+      if (targetFilter.operator !== 'BETWEEN' || targetFilter.valueTo.trim()) loadActiveTable();
+    }
   });
 });
 
 elements.filterValueToDateBtn.addEventListener('click', () => {
   const dateType = getFilterColumnType();
   if (!dateType) return;
-  openFilterDatePicker(dateType, state.filterValueTo, elements.filterValueToDateBtn, (val) => {
-    state.filterValueTo = val;
-    updateFilterValueUI();
-    if (state.filterValue.trim()) loadActiveTable();
+  const tabId = getActiveTab()?.id;
+  const filter = getActiveFilter();
+  openFilterDatePicker(dateType, filter.valueTo, elements.filterValueToDateBtn, (val) => {
+    const targetFilter = getFilterForTab(tabId);
+    targetFilter.valueTo = val;
+    if (state.activeTabId === tabId) {
+      syncFilterControls();
+      if (targetFilter.value.trim()) loadActiveTable();
+    }
   });
 });
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const { execFileSync, spawnSync } = require('node:child_process');
-const { existsSync, readFileSync, writeFileSync, readdirSync } = require('node:fs');
+const { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync } = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline/promises');
 
@@ -134,13 +134,6 @@ async function prompt(question, fallback = '') {
   }
 }
 
-async function confirm(question, defaultYes = false) {
-  const suffix = defaultYes ? ' [Y/n] ' : ' [y/N] ';
-  const answer = (await prompt(`${question}${suffix}`)).toLowerCase();
-  if (!answer) return defaultYes;
-  return answer === 'y' || answer === 'yes' || answer === 'j' || answer === 'ja';
-}
-
 function openEditorIfAvailable(filePath) {
   const editor = process.env.EDITOR || process.env.VISUAL;
   if (!editor) return false;
@@ -186,11 +179,32 @@ function updatePackageVersions(version) {
   }
 }
 
-function findBuiltDmgs() {
+function getDistPath() {
+  return path.join(root, 'dist');
+}
+
+function cleanOldDmgs() {
+  const distPath = getDistPath();
+  if (!existsSync(distPath)) return;
+
+  const oldDmgs = readdirSync(distPath)
+    .filter((name) => name.toLowerCase().endsWith('.dmg'))
+    .map((name) => path.join(distPath, name));
+
+  for (const dmg of oldDmgs) {
+    unlinkSync(dmg);
+  }
+
+  if (oldDmgs.length) {
+    console.log(`\n${oldDmgs.length} oude DMG asset${oldDmgs.length === 1 ? '' : 's'} uit dist/ verwijderd.`);
+  }
+}
+
+function findBuiltDmgs(version) {
   const distPath = path.join(root, 'dist');
   if (!existsSync(distPath)) return [];
   return readdirSync(distPath)
-    .filter((name) => name.toLowerCase().endsWith('.dmg'))
+    .filter((name) => name.toLowerCase().endsWith('.dmg') && name.includes(version))
     .map((name) => path.join(distPath, name));
 }
 
@@ -350,11 +364,12 @@ async function main() {
     throw new Error('REMYSQL_GH_TOKEN ontbreekt. Zet een GitHub token met contents:write voordat je release:publish draait.');
   }
 
+  cleanOldDmgs();
   run(npmCmd, ['run', 'build:mac']);
 
-  const dmgs = findBuiltDmgs();
+  const dmgs = findBuiltDmgs(nextVersion);
   if (!dmgs.length) {
-    throw new Error('Build klaar, maar geen DMG gevonden in dist/.');
+    throw new Error(`Build klaar, maar geen DMG voor versie ${nextVersion} gevonden in dist/.`);
   }
 
   console.log('\nDMG gebouwd:');
@@ -369,20 +384,8 @@ async function main() {
   console.log('\nRelease-wijzigingen:');
   console.log(changed);
 
-  const shouldCommit = await confirm(`Commit en tag ${tag} maken?`, true);
-  if (!shouldCommit) {
-    console.log('Gestopt voor commit/tag. Je wijzigingen blijven lokaal staan.');
-    return;
-  }
-
   run('git', ['commit', '-m', `chore: release ${tag}`]);
   run('git', ['tag', tag]);
-
-  const shouldPush = await confirm(`Push commit en tag ${tag} naar origin?`, false);
-  if (!shouldPush) {
-    console.log(`Niet gepusht. Push later met: git push origin HEAD && git push origin ${tag}`);
-    return;
-  }
 
   run('git', ['push', 'origin', 'HEAD']);
   run('git', ['push', 'origin', tag]);
