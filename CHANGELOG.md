@@ -4,6 +4,14 @@ Alle noemenswaardige wijzigingen in RemySQL staan in dit bestand.
 
 Gebruik per release een kop zoals `## 0.2.4 - 2026-05-31` met daaronder korte bullets onder `Toegevoegd`, `Gewijzigd` en `Opgelost`.
 
+## 0.2.8 - 2026-06-03
+
+### Toegevoegd
+
+### Gewijzigd
+
+### Opgelost
+Tabs hun eigen filters geven
 ## 0.2.7 - 2026-06-01
 
 ### Toegevoegd
