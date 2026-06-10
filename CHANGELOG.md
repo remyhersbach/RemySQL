@@ -4,6 +4,12 @@ Alle noemenswaardige wijzigingen in RemySQL staan in dit bestand.
 
 Gebruik per release een kop zoals `## 0.2.4 - 2026-05-31`. Het release-script vult de inhoud vanuit `RELEASE_NOTES.md`.
 
+## 0.2.10 - 2026-06-10
+
+### Wijzigingen
+
+- Connecties worden na de eerste decrypt in het main process gecached, zodat macOS Keychain na een update niet meerdere keren om toegang vraagt.
+
 ## 0.2.9 - 2026-06-10
 
 ### Wijzigingen
