@@ -39,7 +39,11 @@ function getOutput(command, commandArgs) {
 }
 
 function getGitStatus() {
-  return getOutput('git', ['status', '--short']);
+  return execFileSync('git', ['status', '--short'], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe']
+  }).replace(/\r?\n$/, '');
 }
 
 function getStatusPath(statusLine) {
