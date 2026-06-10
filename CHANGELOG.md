@@ -4,6 +4,13 @@ Alle noemenswaardige wijzigingen in RemySQL staan in dit bestand.
 
 Gebruik per release een kop zoals `## 0.2.4 - 2026-05-31`. Het release-script vult de inhoud vanuit `RELEASE_NOTES.md`.
 
+## 0.2.11 - 2026-06-10
+
+### Wijzigingen
+
+- RemySQL staat nog maar één actieve app-instance toe, zodat een update/installatie niet per ongeluk meerdere processen tegelijk Keychain-toegang laat vragen.
+- Connecties gebruiken een eigen versleutelde datasleutel in memory, zodat Keychain niet opnieuw nodig is bij elke connectie-read of -write.
+
 ## 0.2.10 - 2026-06-10
 
 ### Wijzigingen
