@@ -1159,9 +1159,6 @@ async function loadConnections() {
     state.connections = await window.sqlBase.listConnections();
     if (!state.activeConnectionId && state.connections.length) {
       state.activeConnectionId = state.connections[0].id;
-      if (state.connections[0].type !== 'ssh') {
-        await loadSchemaForActiveConnection();
-      }
     }
   } catch (error) {
     state.connections = [];

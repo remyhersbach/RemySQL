@@ -63,6 +63,7 @@ const connectionColors = new Set(['#ffffff', '#ef4444', '#f97316', '#eab308', '#
 const isConnectionColor = (value) => connectionColors.has(String(value || '').toLowerCase());
 const encryptedConnectionsVersion = 2;
 let connectionsCache = null;
+let connectionsPublicCache = null;
 let connectionsCryptoKey = null;
 let encryptedConnectionsKey = null;
 const packageJson = require('../package.json');
@@ -166,6 +167,14 @@ function getConnectionsPath() {
   return path.join(dir, 'connections.json');
 }
 
+function getConnectionsIndexPath() {
+  const dir = app.getPath('userData');
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  return path.join(dir, 'connections.index.json');
+}
+
 function assertCanEncryptConnections() {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('Connecties kunnen niet veilig worden opgeslagen: OS-versleuteling is niet beschikbaar.');
@@ -251,7 +260,80 @@ function cloneConnections(connections) {
   }));
 }
 
-function readConnections() {
+function sanitizeConnectionForList(connection) {
+  const { password, ...safeConnection } = connection;
+  if (safeConnection.sshTunnel) {
+    const { password: tunnelPassword, ...safeTunnel } = safeConnection.sshTunnel;
+    safeConnection.sshTunnel = safeTunnel;
+  }
+  return safeConnection;
+}
+
+function sanitizeConnectionsForList(connections) {
+  return normalizeConnectionPositions(connections).map(sanitizeConnectionForList);
+}
+
+function readConnectionsIndex() {
+  const filePath = getConnectionsIndexPath();
+  if (!existsSync(filePath)) return null;
+  const payload = JSON.parse(readFileSync(filePath, 'utf8'));
+  const connections = Array.isArray(payload?.connections) ? payload.connections : [];
+  return normalizeConnectionPositions(connections);
+}
+
+function writeConnectionsIndex(connections) {
+  const publicConnections = sanitizeConnectionsForList(connections);
+  writeFileSync(getConnectionsIndexPath(), JSON.stringify({
+    version: 1,
+    connections: publicConnections
+  }, null, 2));
+  connectionsPublicCache = publicConnections;
+}
+
+function mergeStoredSecrets(connection, storedConnection) {
+  if (!storedConnection) return connection;
+  const next = { ...connection };
+  if (!next.password && storedConnection.password) {
+    next.password = storedConnection.password;
+  }
+  if (next.sshTunnel && storedConnection.sshTunnel) {
+    next.sshTunnel = {
+      ...next.sshTunnel,
+      ...(!next.sshTunnel.password && storedConnection.sshTunnel.password
+        ? { password: storedConnection.sshTunnel.password }
+        : {})
+    };
+  }
+  return next;
+}
+
+function hydrateConnection(connection) {
+  if (!connection?.id) return connection;
+  const stored = readConnections(true).find((item) => item.id === connection.id);
+  return mergeStoredSecrets(connection, stored);
+}
+
+function readConnections(includeSecrets = true) {
+  if (!includeSecrets) {
+    if (connectionsPublicCache) {
+      return cloneConnections(connectionsPublicCache);
+    }
+
+    try {
+      const indexedConnections = readConnectionsIndex();
+      if (indexedConnections) {
+        connectionsPublicCache = indexedConnections;
+        return cloneConnections(connectionsPublicCache);
+      }
+    } catch {
+      connectionsPublicCache = null;
+    }
+
+    const connections = readConnections(true);
+    writeConnectionsIndex(connections);
+    return cloneConnections(connectionsPublicCache);
+  }
+
   if (connectionsCache) {
     return cloneConnections(connectionsCache);
   }
@@ -259,6 +341,7 @@ function readConnections() {
   const filePath = getConnectionsPath();
   if (!existsSync(filePath)) {
     connectionsCache = [];
+    connectionsPublicCache = [];
     return [];
   }
 
@@ -266,6 +349,7 @@ function readConnections() {
     const payload = JSON.parse(readFileSync(filePath, 'utf8'));
     const connections = payload?.encrypted && payload?.data ? decryptConnections(payload) : [];
     connectionsCache = normalizeConnectionPositions(connections);
+    writeConnectionsIndex(connectionsCache);
     return cloneConnections(connectionsCache);
   } catch (error) {
     throw new Error(`Connecties konden niet worden gelezen: ${error.message}`);
@@ -276,6 +360,7 @@ function writeConnections(connections) {
   const normalized = normalizeConnectionPositions(connections);
   writeFileSync(getConnectionsPath(), JSON.stringify(encryptConnections(normalized), null, 2));
   connectionsCache = normalized;
+  writeConnectionsIndex(normalized);
 }
 
 function getNextGroupName(connections) {
@@ -1601,7 +1686,7 @@ function createMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-ipcMain.handle('connections:list', () => readConnections());
+ipcMain.handle('connections:list', () => readConnections(false));
 
 ipcMain.handle('app:info', () => ({
   name: app.name,
@@ -1622,26 +1707,30 @@ ipcMain.handle('app:open-external', async (_event, url) => {
 });
 
 ipcMain.handle('connections:add', async (_event, connection) => {
-  const normalized = normalizeConnection(connection);
+  const connections = readConnections(true);
+  const existing = connection?.id ? connections.find((item) => item.id === connection.id) : null;
+  const normalized = mergeStoredSecrets(normalizeConnection(connection), existing);
   const tables = normalized.type === 'ssh' ? [] : await getTables(normalized);
-  const connections = readConnections();
   const nextConnections = normalizeConnectionPositions([
     normalized,
     ...connections.filter((item) => item.id !== normalized.id && !sameConnection(item, normalized))
   ]);
   writeConnections(nextConnections);
 
-  return { connection: nextConnections.find((item) => item.id === normalized.id) || normalized, tables };
+  return {
+    connection: sanitizeConnectionForList(nextConnections.find((item) => item.id === normalized.id) || normalized),
+    tables
+  };
 });
 
 ipcMain.handle('connections:remove', (_event, connectionId) => {
-  const nextConnections = readConnections().filter((connection) => connection.id !== connectionId);
+  const nextConnections = readConnections(true).filter((connection) => connection.id !== connectionId);
   writeConnections(nextConnections);
-  return nextConnections;
+  return sanitizeConnectionsForList(nextConnections);
 });
 
 ipcMain.handle('connections:duplicate', async (_event, connectionId) => {
-  const connections = readConnections();
+  const connections = readConnections(true);
   const source = connections.find((connection) => connection.id === connectionId);
   if (!source) {
     throw new Error('Connectie niet gevonden.');
@@ -1657,7 +1746,10 @@ ipcMain.handle('connections:duplicate', async (_event, connectionId) => {
   const nextConnections = normalizeConnectionPositions([duplicate, ...connections]);
   writeConnections(nextConnections);
 
-  return { connection: nextConnections.find((item) => item.id === duplicate.id) || duplicate, tables };
+  return {
+    connection: sanitizeConnectionForList(nextConnections.find((item) => item.id === duplicate.id) || duplicate),
+    tables
+  };
 });
 
 ipcMain.handle('connections:update-background', (_event, { connectionId, backgroundColor }) => {
@@ -1665,7 +1757,7 @@ ipcMain.handle('connections:update-background', (_event, { connectionId, backgro
     throw new Error('Ongeldige kleur.');
   }
 
-  const connections = readConnections();
+  const connections = readConnections(true);
   const nextConnections = connections.map((connection) => (
     connection.id === connectionId
       ? { ...connection, backgroundColor }
@@ -1673,29 +1765,29 @@ ipcMain.handle('connections:update-background', (_event, { connectionId, backgro
   ));
 
   writeConnections(nextConnections);
-  return nextConnections;
+  return sanitizeConnectionsForList(nextConnections);
 });
 
 ipcMain.handle('connections:group', (_event, { sourceConnectionId, targetConnectionId }) => {
-  const { connections: nextConnections, groupId } = groupConnectionList(readConnections(), sourceConnectionId, targetConnectionId);
+  const { connections: nextConnections, groupId } = groupConnectionList(readConnections(true), sourceConnectionId, targetConnectionId);
 
   writeConnections(nextConnections);
-  return { connections: nextConnections, groupId };
+  return { connections: sanitizeConnectionsForList(nextConnections), groupId };
 });
 
 ipcMain.handle('connections:move', (_event, { sourceConnectionId, targetConnectionId, targetGroupId, placement }) => {
   const normalizedPlacement = ['before', 'after', 'inside'].includes(placement) ? placement : 'after';
-  const connections = readConnections();
+  const connections = readConnections(true);
   const source = connections.find((connection) => connection.id === sourceConnectionId);
 
   if (!source) {
-    return connections;
+    return sanitizeConnectionsForList(connections);
   }
 
   if (normalizedPlacement === 'inside') {
     const { connections: nextConnections } = groupConnectionList(connections, sourceConnectionId, targetConnectionId);
     writeConnections(nextConnections);
-    return nextConnections;
+    return sanitizeConnectionsForList(nextConnections);
   }
 
   const delta = normalizedPlacement === 'before' ? -0.1 : 0.1;
@@ -1707,7 +1799,7 @@ ipcMain.handle('connections:move', (_event, { sourceConnectionId, targetConnecti
     : null;
 
   if (!target && !targetGroupEntry) {
-    return connections;
+    return sanitizeConnectionsForList(connections);
   }
 
   const nextConnections = normalizeConnectionPositions(connections.map((connection) => {
@@ -1736,7 +1828,7 @@ ipcMain.handle('connections:move', (_event, { sourceConnectionId, targetConnecti
   }));
 
   writeConnections(nextConnections);
-  return nextConnections;
+  return sanitizeConnectionsForList(nextConnections);
 });
 
 ipcMain.handle('connections:update-group-name', (_event, { groupId, groupName }) => {
@@ -1744,21 +1836,21 @@ ipcMain.handle('connections:update-group-name', (_event, { groupId, groupName })
   const normalizedGroupName = String(groupName || '').trim() || 'Groep';
 
   if (!normalizedGroupId) {
-    return readConnections();
+    return readConnections(false);
   }
 
-  const nextConnections = normalizeConnectionPositions(readConnections().map((connection) => (
+  const nextConnections = normalizeConnectionPositions(readConnections(true).map((connection) => (
     connection.groupId === normalizedGroupId
       ? { ...connection, groupName: normalizedGroupName }
       : connection
   )));
 
   writeConnections(nextConnections);
-  return nextConnections;
+  return sanitizeConnectionsForList(nextConnections);
 });
 
 ipcMain.handle('ssh:start', (_event, payload) => {
-  const connection = payload?.connection || payload;
+  const connection = hydrateConnection(payload?.connection || payload);
   const cols = clamp(payload?.cols || 100, 20, 300);
   const rows = clamp(payload?.rows || 30, 5, 120);
   const normalized = normalizeConnection({ ...connection, type: 'ssh' });
@@ -1821,7 +1913,7 @@ ipcMain.handle('ssh:start', (_event, payload) => {
 });
 
 ipcMain.handle('ssh:open-terminal', async (_event, connection) => {
-  const normalized = normalizeConnection({ ...connection, type: 'ssh' });
+  const normalized = normalizeConnection({ ...hydrateConnection(connection), type: 'ssh' });
   const command = buildSshTerminalCommand(normalized);
   const title = String(normalized.name || getConnectionLabel(normalized)).replaceAll('"', '\\"');
   const script = [
@@ -1876,16 +1968,19 @@ ipcMain.handle('ssh:stop', (_event, sessionId) => {
 });
 
 ipcMain.handle('database:schema', async (_event, connection) => {
+  connection = hydrateConnection(connection);
   const tables = await getTables(connection);
   return { tables };
 });
 
 ipcMain.handle('database:relation-rows', async (_event, { connection, tableName, columnName, value }) => {
+  connection = hydrateConnection(connection);
   const rows = await getRelationRows(connection, tableName, columnName, value);
   return { rows };
 });
 
 ipcMain.handle('database:table', async (_event, { connection, tableName, filter, limit, columnFilter, sort }) => {
+  connection = hydrateConnection(connection);
   const [columns, data, outgoingKeys, incomingKeys] = await Promise.all([
     getColumns(connection, tableName),
     getData(connection, tableName, filter, limit, columnFilter, sort),
@@ -1906,6 +2001,7 @@ ipcMain.handle('database:table', async (_event, { connection, tableName, filter,
 });
 
 ipcMain.handle('database:update-rows', async (_event, { connection, tableName, updates }) => {
+  connection = hydrateConnection(connection);
   const results = [];
   for (const { setValues, whereValues } of updates) {
     try {
@@ -1923,6 +2019,7 @@ ipcMain.handle('database:update-rows', async (_event, { connection, tableName, u
 });
 
 ipcMain.handle('database:insert-rows', async (_event, { connection, tableName, rows }) => {
+  connection = hydrateConnection(connection);
   const results = [];
   for (const row of rows) {
     try {
@@ -1940,6 +2037,7 @@ ipcMain.handle('database:insert-rows', async (_event, { connection, tableName, r
 });
 
 ipcMain.handle('database:delete-rows', async (_event, { connection, tableName, rows }) => {
+  connection = hydrateConnection(connection);
   const results = [];
   for (const row of rows) {
     try {
@@ -1957,6 +2055,7 @@ ipcMain.handle('database:delete-rows', async (_event, { connection, tableName, r
 });
 
 ipcMain.handle('database:run-sql', async (_event, { connection, sql }) => {
+  connection = hydrateConnection(connection);
   const trimmed = String(sql || '').trim();
   if (!trimmed) throw new Error('Geen SQL opgegeven.');
 
@@ -1979,6 +2078,7 @@ ipcMain.handle('database:run-sql', async (_event, { connection, sql }) => {
 });
 
 ipcMain.handle('database:backup-table', async (_event, { connection, tableName }) => {
+  connection = hydrateConnection(connection);
   if (!tableName) {
     throw new Error('Geen tabel gekozen.');
   }
