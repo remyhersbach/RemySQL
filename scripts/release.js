@@ -147,6 +147,10 @@ function ensureReleaseNotesFile() {
   return true;
 }
 
+function resetReleaseNotesFile() {
+  writeFileSync(releaseNotesPath, `${getReleaseNotesTemplate()}\n`);
+}
+
 function readReleaseNotes(version, tag) {
   return readFileSync(releaseNotesPath, 'utf8')
     .replaceAll('{{version}}', version)
@@ -452,6 +456,8 @@ async function main() {
   if (publish) {
     await publishGitHubRelease(tag, nextVersion, dmgs);
   }
+  resetReleaseNotesFile();
+  console.log('RELEASE_NOTES.md is teruggezet als werkbestand voor de volgende release.');
   console.log(`\nRelease ${tag} staat op GitHub.`);
 }
 
