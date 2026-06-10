@@ -37,13 +37,15 @@ Voor de lokale SQLite demo:
 
 ## Release maken
 
-Gebruik het release-script vanaf een schone git worktree:
+Gebruik het release-script vanaf een schone git worktree. `RELEASE_NOTES.md` mag al handmatig aangepast zijn; dat bestand wordt meegenomen in de release-commit.
 
 ```bash
 npm run release
 ```
 
-Het script verhoogt het versienummer, dwingt een `CHANGELOG.md`-sectie af, draait syntax-checks, bouwt een macOS DMG met `npm run build:mac`, maakt een release-commit plus git-tag, en vraagt daarna bevestiging voordat het naar GitHub pusht.
+Het script verhoogt het versienummer, dwingt een `CHANGELOG.md`-sectie af voor de in-app changelog, leest de GitHub Release-notes uit `RELEASE_NOTES.md`, draait syntax-checks, bouwt een macOS DMG met `npm run build:mac`, maakt een release-commit plus git-tag, en pusht naar GitHub.
+
+Gebruik `RELEASE_NOTES.md` voor de tekst op GitHub Releases. De tokens `{{version}}` en `{{tag}}` worden tijdens de release automatisch ingevuld.
 
 Wil je de DMG ook direct als GitHub Release asset uploaden, zet `REMYSQL_GH_TOKEN` met `contents:write` en gebruik:
 

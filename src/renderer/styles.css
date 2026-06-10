@@ -360,6 +360,17 @@ button:disabled {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.connection-form.dragging .connection-form-header {
+  cursor: grabbing;
+}
+
+.connection-form-header button {
+  cursor: pointer;
 }
 
 .connection-form-title {
@@ -1034,6 +1045,19 @@ select:focus {
   margin-bottom: 2px;
 }
 
+.connection-form-error {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--warning-border);
+  border-radius: 7px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .connection-color-swatch {
   width: 16px;
   height: 16px;
@@ -1355,19 +1379,86 @@ select:focus {
 }
 
 .filter-column-mode {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   flex: 1;
   min-width: 0;
 }
 
-.filter-column-mode select { flex: 0 1 180px; width: auto; }
-.filter-column-mode #filterOperatorSelect { flex-basis: 150px; }
-.filter-column-mode input  { flex: 1 1 130px; min-width: 90px; width: auto; }
+.filter-column-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-column-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.filter-column-row select {
+  flex: 1 1 150px;
+  min-width: 104px;
+  width: auto;
+}
+
+.filter-column-row select[data-filter-field="operator"] {
+  flex: 0 1 122px;
+  min-width: 104px;
+}
+
+.filter-column-row input {
+  flex: 0 1 96px;
+  min-width: 70px;
+  width: auto;
+  padding-left: 7px;
+  padding-right: 7px;
+}
+
+.filter-column-row.is-between select {
+  flex-basis: 136px;
+}
+
+.filter-column-row.is-between select[data-filter-field="operator"] {
+  flex-basis: 100px;
+  min-width: 94px;
+}
+
+.filter-column-row.is-between input {
+  flex-basis: 82px;
+  min-width: 62px;
+}
+
+.filter-chain-button {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  transition: background 120ms, color 120ms, border-color 120ms;
+}
+
+.filter-chain-button:hover {
+  background: var(--interactive-bg);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.filter-chain-button.add {
+  color: var(--accent);
+}
 
 .filter-date-btn {
-  flex-shrink: 0;
+  flex: 0 1 104px;
+  min-width: 74px;
   height: 34px;
   padding: 0 10px;
   border: 1px solid var(--border-strong);
@@ -1377,8 +1468,17 @@ select:focus {
   font-size: 12px;
   font-family: inherit;
   white-space: nowrap;
+  overflow: hidden;
   text-align: left;
+  text-overflow: ellipsis;
   transition: border-color 120ms, box-shadow 120ms;
+}
+
+.filter-column-row.is-between .filter-date-btn {
+  flex-basis: 86px;
+  min-width: 68px;
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 .filter-date-btn:hover {

@@ -906,6 +906,33 @@ function interpolateSql(sql, values) {
   ));
 }
 
+function getColumnFilterList(columnFilter) {
+  if (!columnFilter) return [];
+  return Array.isArray(columnFilter) ? columnFilter : [columnFilter];
+}
+
+function appendSqliteColumnFilterClauses(clauses, columns, columnFilter) {
+  const validColumns = new Set((columns || []).map((column) => column.name));
+  getColumnFilterList(columnFilter).forEach((item) => {
+    if (!item?.column || !validColumns.has(item.column) || !String(item.value ?? '').trim()) return;
+    const col = quoteSqliteIdentifier(item.column);
+    const val = String(item.value).trim();
+    if (item.operator === 'BETWEEN' && String(item.valueTo ?? '').trim()) {
+      clauses.push(`${col} BETWEEN ${quoteLiteral(val)} AND ${quoteLiteral(String(item.valueTo).trim())}`);
+    } else if (item.operator === '!=') {
+      clauses.push(`${col} != ${quoteLiteral(val)}`);
+    } else if (item.operator === '>') {
+      clauses.push(`${col} > ${quoteLiteral(val)}`);
+    } else if (item.operator === '<') {
+      clauses.push(`${col} < ${quoteLiteral(val)}`);
+    } else if (item.operator === 'LIKE') {
+      clauses.push(`CAST(${col} AS TEXT) LIKE ${quoteLiteral(`%${val}%`)}`);
+    } else {
+      clauses.push(`${col} = ${quoteLiteral(val)}`);
+    }
+  });
+}
+
 async function getSqliteData(databasePath, tableName, filter, limit, columnFilter, sort) {
   const safeLimit = clamp(limit, 1, 5000);
   const columns = await getSqliteColumns(databasePath, tableName);
@@ -918,19 +945,7 @@ async function getSqliteData(databasePath, tableName, filter, limit, columnFilte
       .join(' OR ')})`);
   }
 
-  if (columnFilter?.column && String(columnFilter.value ?? '').trim()) {
-    const col = quoteSqliteIdentifier(columnFilter.column);
-    const val = String(columnFilter.value).trim();
-    if (columnFilter.operator === 'BETWEEN' && String(columnFilter.valueTo ?? '').trim()) {
-      clauses.push(`${col} BETWEEN ${quoteLiteral(val)} AND ${quoteLiteral(String(columnFilter.valueTo).trim())}`);
-    } else if (columnFilter.operator === '!=') {
-      clauses.push(`${col} != ${quoteLiteral(val)}`);
-    } else if (columnFilter.operator === 'LIKE') {
-      clauses.push(`CAST(${col} AS TEXT) LIKE ${quoteLiteral(`%${val}%`)}`);
-    } else {
-      clauses.push(`${col} = ${quoteLiteral(val)}`);
-    }
-  }
+  appendSqliteColumnFilterClauses(clauses, columns, columnFilter);
 
   const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
   const normalizedSort = normalizeSort(sort, columns);
@@ -1014,6 +1029,29 @@ async function getMariaIncomingForeignKeys(connection, tableName) {
   );
 }
 
+function appendMariaColumnFilterClauses(clauses, values, columns, columnFilter) {
+  const validColumns = new Set((columns || []).map((column) => column.name));
+  getColumnFilterList(columnFilter).forEach((item) => {
+    if (!item?.column || !validColumns.has(item.column) || !String(item.value ?? '').trim()) return;
+    const col = quoteMariaIdentifier(item.column);
+    const val = String(item.value).trim();
+    if (item.operator === 'BETWEEN' && String(item.valueTo ?? '').trim()) {
+      clauses.push(`${col} BETWEEN ? AND ?`);
+      values.push(val, String(item.valueTo).trim());
+    } else if (item.operator === '!=') {
+      clauses.push(`${col} != ?`); values.push(val);
+    } else if (item.operator === '>') {
+      clauses.push(`${col} > ?`); values.push(val);
+    } else if (item.operator === '<') {
+      clauses.push(`${col} < ?`); values.push(val);
+    } else if (item.operator === 'LIKE') {
+      clauses.push(`CAST(${col} AS CHAR) LIKE ?`); values.push(`%${val}%`);
+    } else {
+      clauses.push(`${col} = ?`); values.push(val);
+    }
+  });
+}
+
 async function getMariaData(connection, tableName, filter, limit, columnFilter, sort) {
   const safeLimit = clamp(limit, 1, 5000);
   const columns = await getMariaColumns(connection, tableName);
@@ -1028,20 +1066,7 @@ async function getMariaData(connection, tableName, filter, limit, columnFilter, 
     searchableColumns.forEach(() => values.push(`%${filter.trim()}%`));
   }
 
-  if (columnFilter?.column && String(columnFilter.value ?? '').trim()) {
-    const col = quoteMariaIdentifier(columnFilter.column);
-    const val = String(columnFilter.value).trim();
-    if (columnFilter.operator === 'BETWEEN' && String(columnFilter.valueTo ?? '').trim()) {
-      clauses.push(`${col} BETWEEN ? AND ?`);
-      values.push(val, String(columnFilter.valueTo).trim());
-    } else if (columnFilter.operator === '!=') {
-      clauses.push(`${col} != ?`); values.push(val);
-    } else if (columnFilter.operator === 'LIKE') {
-      clauses.push(`CAST(${col} AS CHAR) LIKE ?`); values.push(`%${val}%`);
-    } else {
-      clauses.push(`${col} = ?`); values.push(val);
-    }
-  }
+  appendMariaColumnFilterClauses(clauses, values, columns, columnFilter);
 
   const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
   const normalizedSort = normalizeSort(sort, columns);
@@ -1167,6 +1192,41 @@ async function updateMariaRow(connection, tableName, setValues, whereValues) {
     ...whereEntries.filter(([, v]) => v !== null).map(([, v]) => v)
   ];
   return runMariaDb(connection, `UPDATE ${quoteMariaIdentifier(tableName)} SET ${setClauses} WHERE ${whereClauses};`, values);
+}
+
+function assertDeleteWhereValues(whereValues) {
+  if (!whereValues || !Object.keys(whereValues).length) {
+    throw new Error('Rij kan niet worden verwijderd zonder kolomwaarden om op te zoeken.');
+  }
+}
+
+async function deleteSqliteRow(databasePath, tableName, whereValues, limitOne = false) {
+  assertDeleteWhereValues(whereValues);
+  const whereClauses = Object.entries(whereValues)
+    .map(([k, v]) => v === null
+      ? `${quoteSqliteIdentifier(k)} IS NULL`
+      : `${quoteSqliteIdentifier(k)} = ${quoteLiteral(v)}`)
+    .join(' AND ');
+
+  if (limitOne) {
+    return runSqlite(
+      databasePath,
+      `DELETE FROM ${quoteSqliteIdentifier(tableName)} WHERE _rowid_ IN (SELECT _rowid_ FROM ${quoteSqliteIdentifier(tableName)} WHERE ${whereClauses} LIMIT 1);`
+    );
+  }
+
+  return runSqlite(databasePath, `DELETE FROM ${quoteSqliteIdentifier(tableName)} WHERE ${whereClauses};`);
+}
+
+async function deleteMariaRow(connection, tableName, whereValues, limitOne = false) {
+  assertDeleteWhereValues(whereValues);
+  const whereEntries = Object.entries(whereValues);
+  const whereClauses = whereEntries
+    .map(([k, v]) => v === null ? `${quoteMariaIdentifier(k)} IS NULL` : `${quoteMariaIdentifier(k)} = ?`)
+    .join(' AND ');
+  const values = whereEntries.filter(([, v]) => v !== null).map(([, v]) => v);
+  const limitSql = limitOne ? ' LIMIT 1' : '';
+  return runMariaDb(connection, `DELETE FROM ${quoteMariaIdentifier(tableName)} WHERE ${whereClauses}${limitSql};`, values);
 }
 
 async function insertSqliteRow(databasePath, tableName, values) {
@@ -1788,6 +1848,23 @@ ipcMain.handle('database:insert-rows', async (_event, { connection, tableName, r
         await insertSqliteRow(connection.path, tableName, row);
       } else {
         await insertMariaRow(connection, tableName, row);
+      }
+      results.push({ ok: true });
+    } catch (error) {
+      results.push({ ok: false, error: error.message });
+    }
+  }
+  return results;
+});
+
+ipcMain.handle('database:delete-rows', async (_event, { connection, tableName, rows }) => {
+  const results = [];
+  for (const row of rows) {
+    try {
+      if (connection.type === 'sqlite') {
+        await deleteSqliteRow(connection.path, tableName, row.whereValues, Boolean(row.limitOne));
+      } else {
+        await deleteMariaRow(connection, tableName, row.whereValues, Boolean(row.limitOne));
       }
       results.push({ ok: true });
     } catch (error) {

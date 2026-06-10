@@ -20,6 +20,7 @@ const state = {
   draggingConnectionId: null,
   focusGroupId: null,
   contextMenuConnectionId: null,
+  contextMenuRowIndex: null,
   sshSessionByTab: new Map(),
   sshOutputByTab: new Map(),
   sshTerminalByTab: new Map(),
@@ -42,12 +43,21 @@ const connectionColorOptions = [
   { value: '#64748b', label: 'Grijs' }
 ];
 
+const connectionFormDrag = {
+  active: false,
+  pointerId: null,
+  offsetX: 0,
+  offsetY: 0
+};
+
 const elements = {
   themeToggleButton: document.querySelector('#themeToggleButton'),
   newConnectionButton: document.querySelector('#newConnectionButton'),
   connectionForm: document.querySelector('#connectionForm'),
+  connectionFormHeader: document.querySelector('#connectionForm .connection-form-header'),
   connectionFormBackdrop: document.querySelector('#connectionFormBackdrop'),
   connectionFormCloseButton: document.querySelector('#connectionFormCloseButton'),
+  connectionFormError: document.querySelector('#connectionFormError'),
   connectionTypeSelect: document.querySelector('#connectionTypeSelect'),
   connectionNameInput: document.querySelector('#connectionNameInput'),
   mariaFields: document.querySelector('#mariaFields'),
@@ -91,13 +101,8 @@ const elements = {
   filterArea: document.querySelector('#filterArea'),
   filterTextMode: document.querySelector('#filterTextMode'),
   filterColumnMode: document.querySelector('#filterColumnMode'),
+  filterColumnRows: document.querySelector('#filterColumnRows'),
   filterModeToggle: document.querySelector('#filterModeToggle'),
-  filterColumnSelect: document.querySelector('#filterColumnSelect'),
-  filterOperatorSelect: document.querySelector('#filterOperatorSelect'),
-  filterValueInput: document.querySelector('#filterValueInput'),
-  filterValueDateBtn: document.querySelector('#filterValueDateBtn'),
-  filterBetweenSep: document.querySelector('#filterBetweenSep'),
-  filterValueToDateBtn: document.querySelector('#filterValueToDateBtn'),
   limitInput: document.querySelector('#limitInput'),
   tableMeta: document.querySelector('#tableMeta'),
   dataPanel: document.querySelector('.data-panel'),
@@ -532,15 +537,51 @@ function getActiveTab() {
   return state.tabs.find((tab) => tab.id === state.activeTabId) || null;
 }
 
-function createDefaultFilterState() {
+function createDefaultColumnFilterState() {
   return {
-    mode: 'text',
-    text: '',
     column: '',
     operator: '=',
     value: '',
     valueTo: ''
   };
+}
+
+function createDefaultFilterState() {
+  return {
+    mode: 'text',
+    text: '',
+    columnFilters: [createDefaultColumnFilterState()]
+  };
+}
+
+function normalizeColumnFilterState(filter) {
+  if (!filter) return createDefaultFilterState();
+
+  if (!Array.isArray(filter.columnFilters)) {
+    filter.columnFilters = [{
+      column: filter.column || '',
+      operator: filter.operator || '=',
+      value: filter.value || '',
+      valueTo: filter.valueTo || ''
+    }];
+    delete filter.column;
+    delete filter.operator;
+    delete filter.value;
+    delete filter.valueTo;
+  }
+
+  if (!filter.columnFilters.length) {
+    filter.columnFilters.push(createDefaultColumnFilterState());
+  }
+
+  filter.columnFilters = filter.columnFilters.map((item) => ({
+    column: item?.column || '',
+    operator: ['=', '!=', 'LIKE', 'BETWEEN', '>', '<'].includes(item?.operator) ? item.operator : '=',
+    value: item?.value || '',
+    valueTo: item?.valueTo || ''
+  }));
+
+  return filter;
 }
 
 function getFilterForTab(tabId, create = true) {
@@ -550,11 +591,16 @@ function getFilterForTab(tabId, create = true) {
   if (!state.filterByTab.has(tabId) && create) {
     state.filterByTab.set(tabId, createDefaultFilterState());
   }
-  return state.filterByTab.get(tabId) || createDefaultFilterState();
+  return normalizeColumnFilterState(state.filterByTab.get(tabId) || createDefaultFilterState());
 }
 
 function getActiveFilter() {
   return getFilterForTab(getActiveTab()?.id);
+}
+
+function getColumnFilterAt(index, filter = getActiveFilter()) {
+  const normalized = normalizeColumnFilterState(filter);
+  return normalized.columnFilters[index] || null;
 }
 
 function escapeHtml(value) {
@@ -584,11 +630,12 @@ function getHighlightTermForColumn(columnName) {
 
   const filter = getActiveFilter();
   if (filter.mode === 'column') {
-    const operator = filter.operator;
-    const column = filter.column;
-    return column === columnName && ['=', '!=', 'LIKE'].includes(operator)
-      ? String(filter.value || '').trim()
-      : '';
+    const match = filter.columnFilters.find((item) => (
+      item.column === columnName
+      && ['=', '!=', 'LIKE'].includes(item.operator)
+      && String(item.value || '').trim()
+    ));
+    return match ? String(match.value || '').trim() : '';
   }
 
   return String(filter.text || '').trim();
@@ -638,17 +685,48 @@ function quoteSqlLiteral(value) {
 function getActiveColumnFilter() {
   const filter = getActiveFilter();
   if (filter.mode !== 'column') return null;
-  const column = filter.column;
-  const operator = filter.operator;
-  if (!column) return null;
-  if (operator === 'BETWEEN') {
-    return filter.value.trim() && filter.valueTo.trim()
-      ? { column, operator: 'BETWEEN', value: filter.value, valueTo: filter.valueTo }
-      : null;
-  }
-  return filter.value.trim()
-    ? { column, operator, value: filter.value }
-    : null;
+  const filters = filter.columnFilters
+    .map((item) => {
+      const column = item.column;
+      const operator = item.operator;
+      if (!column) return null;
+      if (operator === 'BETWEEN') {
+        return item.value.trim() && item.valueTo.trim()
+          ? { column, operator: 'BETWEEN', value: item.value, valueTo: item.valueTo }
+          : null;
+      }
+      return item.value.trim()
+        ? { column, operator, value: item.value }
+        : null;
+    })
+    .filter(Boolean);
+  return filters.length ? filters : null;
+}
+
+function getColumnFilterList(columnFilter) {
+  if (!columnFilter) return [];
+  return Array.isArray(columnFilter) ? columnFilter : [columnFilter];
+}
+
+function appendColumnFilterClauses(clauses, connection, validColumns, columnFilter, castType) {
+  getColumnFilterList(columnFilter).forEach((item) => {
+    if (!item?.column || !validColumns.has(item.column) || !String(item.value ?? '').trim()) return;
+    const col = quoteSqlIdentifier(connection, item.column);
+    const val = String(item.value).trim();
+    if (item.operator === 'BETWEEN' && String(item.valueTo ?? '').trim()) {
+      clauses.push(`${col} BETWEEN ${quoteSqlLiteral(val)} AND ${quoteSqlLiteral(String(item.valueTo).trim())}`);
+    } else if (item.operator === '!=') {
+      clauses.push(`${col} != ${quoteSqlLiteral(val)}`);
+    } else if (item.operator === '>') {
+      clauses.push(`${col} > ${quoteSqlLiteral(val)}`);
+    } else if (item.operator === '<') {
+      clauses.push(`${col} < ${quoteSqlLiteral(val)}`);
+    } else if (item.operator === 'LIKE') {
+      clauses.push(`CAST(${col} AS ${castType}) LIKE ${quoteSqlLiteral(`%${val}%`)}`);
+    } else {
+      clauses.push(`${col} = ${quoteSqlLiteral(val)}`);
+    }
+  });
 }
 
 function buildTableSelectQuery(connection, tableName, columns, { filter, limit, columnFilter, sort }) {
@@ -664,19 +742,7 @@ function buildTableSelectQuery(connection, tableName, columns, { filter, limit, 
       .join(' OR ')})`);
   }
 
-  if (columnFilter?.column && validColumns.has(columnFilter.column) && String(columnFilter.value ?? '').trim()) {
-    const col = quoteSqlIdentifier(connection, columnFilter.column);
-    const val = String(columnFilter.value).trim();
-    if (columnFilter.operator === 'BETWEEN' && String(columnFilter.valueTo ?? '').trim()) {
-      clauses.push(`${col} BETWEEN ${quoteSqlLiteral(val)} AND ${quoteSqlLiteral(String(columnFilter.valueTo).trim())}`);
-    } else if (columnFilter.operator === '!=') {
-      clauses.push(`${col} != ${quoteSqlLiteral(val)}`);
-    } else if (columnFilter.operator === 'LIKE') {
-      clauses.push(`CAST(${col} AS ${castType}) LIKE ${quoteSqlLiteral(`%${val}%`)}`);
-    } else {
-      clauses.push(`${col} = ${quoteSqlLiteral(val)}`);
-    }
-  }
+  appendColumnFilterClauses(clauses, connection, validColumns, columnFilter, castType);
 
   const direction = String(sort?.direction || '').toLowerCase();
   const order = sort?.column && validColumns.has(sort.column) && ['asc', 'desc'].includes(direction)
@@ -803,6 +869,15 @@ function closeCellViewer() {
   elements.cellViewerBackdrop.hidden = true;
 }
 
+function isBlockingDialogOpen() {
+  return !elements.connectionForm.hidden
+    || !elements.sqlDialog.hidden
+    || !elements.cellViewerDialog.hidden
+    || !elements.datePicker.hidden
+    || !elements.releaseDialog.hidden
+    || !elements.errorDialog.hidden;
+}
+
 async function copyCellViewerValue() {
   const text = elements.cellViewerValue.value;
   try {
@@ -916,11 +991,40 @@ function setConnectionFormType(type) {
   elements.connectionReadOnlyRow.hidden = normalizedType === 'ssh';
 }
 
+function clearConnectionFormError() {
+  elements.connectionFormError.textContent = '';
+  elements.connectionFormError.hidden = true;
+}
+
+function showConnectionFormError(message) {
+  elements.connectionFormError.textContent = cleanErrorMessage(message);
+  elements.connectionFormError.hidden = false;
+  elements.connectionFormError.scrollIntoView({ block: 'nearest' });
+}
+
+function resetConnectionFormPosition() {
+  elements.connectionForm.style.left = '50%';
+  elements.connectionForm.style.top = '50%';
+  elements.connectionForm.style.transform = 'translate(-50%, -50%)';
+}
+
+function moveConnectionForm(left, top) {
+  const rect = elements.connectionForm.getBoundingClientRect();
+  const margin = 8;
+  const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+  const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+  elements.connectionForm.style.left = `${Math.min(Math.max(margin, left), maxLeft)}px`;
+  elements.connectionForm.style.top = `${Math.min(Math.max(margin, top), maxTop)}px`;
+  elements.connectionForm.style.transform = 'none';
+}
+
 function openConnectionForm(type = 'mariadb', preset = {}) {
   state.editingConnectionId = preset.id || null;
+  clearConnectionFormError();
   elements.connectionFormTitle.textContent = state.editingConnectionId ? 'Connectie bewerken' : 'Nieuwe connectie';
   elements.connectionForm.hidden = false;
   elements.connectionFormBackdrop.hidden = false;
+  resetConnectionFormPosition();
   setConnectionFormType(type);
   elements.connectionNameInput.value = preset.name || '';
   elements.connectionPathInput.value = preset.path || '';
@@ -957,6 +1061,7 @@ function closeConnectionForm() {
 
 function resetConnectionForm() {
   state.editingConnectionId = null;
+  clearConnectionFormError();
   elements.connectionNameInput.value = '';
   elements.connectionPathInput.value = '';
   elements.mariaConnectionModeSelect.value = 'direct';
@@ -1092,6 +1197,7 @@ async function loadSchemaForActiveConnection() {
 }
 
 async function saveConnection(connection) {
+  clearConnectionFormError();
   try {
     const result = await window.sqlBase.addConnection(connection);
     state.connections = [
@@ -1107,7 +1213,7 @@ async function saveConnection(connection) {
     resetConnectionForm();
     render();
   } catch (error) {
-    showToast(error.message);
+    showConnectionFormError(error.message);
   }
 }
 
@@ -1786,40 +1892,81 @@ function openFilterDatePicker(inputType, currentValue, anchorEl, onConfirm) {
   datePickerState.onCancel = cancel;
 }
 
-function getFilterColumnType() {
+function getFilterColumnType(index = 0) {
   const tab = getActiveTab();
   const payload = state.tablePayloadByTab.get(tab?.id);
-  const col = payload?.columns?.find((c) => c.name === getActiveFilter().column);
+  const filter = getColumnFilterAt(index);
+  const col = payload?.columns?.find((c) => c.name === filter?.column);
   return col ? getDateInputType(col.type) : null;
+}
+
+function getFilterColumnOptionsHtml(selectedValue) {
+  const tab = getActiveTab();
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  const cols = payload?.columns || [];
+  return '<option value="">— kolom —</option>' +
+    cols
+      .map((col) => {
+        const selected = col.name === selectedValue ? ' selected' : '';
+        return `<option value="${escapeHtml(col.name)}"${selected}>${escapeHtml(col.name)}</option>`;
+      })
+      .join('');
+}
+
+function getFilterOperatorOptionsHtml(selectedValue) {
+  const options = [
+    ['=', 'is gelijk aan'],
+    ['!=', 'is niet gelijk aan'],
+    ['>', 'groter dan'],
+    ['<', 'kleiner dan'],
+    ['LIKE', 'bevat'],
+    ['BETWEEN', 'tussen']
+  ];
+  return options
+    .map(([value, label]) => `<option value="${value}"${value === selectedValue ? ' selected' : ''}>${label}</option>`)
+    .join('');
+}
+
+function renderColumnFilterRows() {
+  const filter = normalizeColumnFilterState(getActiveFilter());
+  elements.filterColumnRows.innerHTML = filter.columnFilters
+    .map((item, index) => {
+      const dateType = item.column ? getFilterColumnType(index) : null;
+      const isDate = Boolean(dateType);
+      const isBetween = item.operator === 'BETWEEN';
+      const valueButtonText = item.value || (isBetween ? 'Van…' : 'Kies datum…');
+      const valueToButtonText = item.valueTo || 'Tot…';
+      const addButton = index === filter.columnFilters.length - 1
+        ? `<button class="filter-chain-button add" type="button" data-filter-action="add" title="Filter toevoegen" aria-label="Filter toevoegen">+</button>`
+        : '';
+      const removeButton = filter.columnFilters.length > 1
+        ? `<button class="filter-chain-button" type="button" data-filter-action="remove" data-filter-index="${index}" title="Filter verwijderen" aria-label="Filter verwijderen">×</button>`
+        : '';
+
+      return `
+        <div class="filter-column-row ${isBetween ? 'is-between' : ''}" data-filter-index="${index}">
+          <select data-filter-field="column">${getFilterColumnOptionsHtml(item.column)}</select>
+          <select data-filter-field="operator">${getFilterOperatorOptionsHtml(item.operator)}</select>
+          <input data-filter-field="value" type="text" placeholder="Waarde..." value="${escapeHtml(item.value)}"${isDate ? ' hidden' : ''} />
+          <button data-filter-action="date-from" class="filter-date-btn" type="button"${isDate ? '' : ' hidden'}>${escapeHtml(valueButtonText)}</button>
+          <span class="filter-between-sep"${isBetween ? '' : ' hidden'}>en</span>
+          <input data-filter-field="valueTo" type="text" placeholder="Tot..." value="${escapeHtml(item.valueTo)}"${isBetween && !isDate ? '' : ' hidden'} />
+          <button data-filter-action="date-to" class="filter-date-btn" type="button"${isBetween && isDate ? '' : ' hidden'}>${escapeHtml(valueToButtonText)}</button>
+          ${addButton}
+          ${removeButton}
+        </div>
+      `;
+    })
+    .join('');
 }
 
 function syncFilterControls() {
   const filter = getActiveFilter();
   elements.filterInput.value = filter.text;
-  elements.filterColumnSelect.value = filter.column;
-  elements.filterOperatorSelect.value = filter.operator;
-  elements.filterValueInput.value = filter.value;
   elements.filterTextMode.hidden = filter.mode === 'column';
   elements.filterColumnMode.hidden = filter.mode !== 'column';
   elements.filterModeToggle.classList.toggle('active', filter.mode === 'column');
-  updateFilterValueUI();
-}
-
-function updateFilterValueUI() {
-  const filter = getActiveFilter();
-  const col = filter.column;
-  const dateType = col ? getFilterColumnType() : null;
-  const isDate = Boolean(dateType);
-  const operator = filter.operator;
-  const isBetween = operator === 'BETWEEN';
-
-  elements.filterValueInput.hidden = isDate;
-  elements.filterValueDateBtn.hidden = !isDate;
-  elements.filterBetweenSep.hidden = !isBetween;
-  elements.filterValueToDateBtn.hidden = !isBetween;
-
-  elements.filterValueDateBtn.textContent = filter.value || (isBetween ? 'Van…' : 'Kies datum…');
-  elements.filterValueToDateBtn.textContent = filter.valueTo || 'Tot…';
+  renderColumnFilterRows();
 }
 
 elements.datePickerConfirm.addEventListener('click', () => datePickerState.onCommit?.());
@@ -2356,7 +2503,6 @@ function renderTableView() {
   elements.filterInput.disabled = !isDataMode;
 
   if (!payload) {
-    elements.filterColumnSelect.innerHTML = '<option value="">— kolom —</option>';
     syncFilterControls();
     elements.tableMeta.textContent = 'Laden...';
     elements.dataTable.innerHTML = '';
@@ -2364,10 +2510,6 @@ function renderTableView() {
     return;
   }
 
-  const cols = payload.columns || [];
-  elements.filterColumnSelect.innerHTML =
-    '<option value="">— kolom —</option>' +
-    cols.map((col) => `<option value="${escapeHtml(col.name)}">${escapeHtml(col.name)}</option>`).join('');
   syncFilterControls();
 
   if (state.mode === 'structure') {
@@ -2539,13 +2681,56 @@ function render() {
 }
 
 function closeConnectionContextMenu() {
-  document.querySelector('.connection-context-menu')?.remove();
+  document.querySelector('.connection-context-menu:not(.row-context-menu)')?.remove();
   state.contextMenuConnectionId = null;
+}
+
+function closeRowContextMenu() {
+  document.querySelector('.row-context-menu')?.remove();
+  state.contextMenuRowIndex = null;
+}
+
+function openRowContextMenu(event, rowIndex) {
+  event.preventDefault();
+  closeConnectionContextMenu();
+  closeRowContextMenu();
+
+  const tab = getActiveTab();
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  const connection = state.connections.find((item) => item.id === tab?.connectionId);
+  if (!tab || !payload || !connection || state.mode !== 'data' || payload.isSqlResult) return;
+
+  const selectedRows = state.selectedRowsByTab.get(tab.id) || new Set();
+  if (!selectedRows.has(rowIndex)) {
+    selectRow(tab, rowIndex);
+  }
+
+  const rowCount = getDeleteRowIndexes(tab, payload, rowIndex).length;
+  state.contextMenuRowIndex = rowIndex;
+
+  const menu = document.createElement('div');
+  menu.className = 'connection-context-menu row-context-menu';
+  menu.innerHTML = `
+    <button type="button" data-row-context-action="delete" class="danger" ${connection.readOnly ? 'disabled' : ''}>
+      <span class="context-menu-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+      </span>
+      ${rowCount === 1 ? 'Verwijder rij' : `Verwijder ${rowCount} rijen`}
+    </button>
+  `;
+  document.body.appendChild(menu);
+
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(event.clientX, window.innerWidth - rect.width - 8);
+  const top = Math.min(event.clientY, window.innerHeight - rect.height - 8);
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
 }
 
 function openConnectionContextMenu(event, connectionId) {
   event.preventDefault();
   closeConnectionContextMenu();
+  closeRowContextMenu();
   state.contextMenuConnectionId = connectionId;
   const conn = state.connections.find((item) => item.id === connectionId);
   const backgroundColor = isHexColor(conn?.backgroundColor) ? conn.backgroundColor.toLowerCase() : '#ffffff';
@@ -2677,6 +2862,37 @@ elements.themeToggleButton.addEventListener('click', () => {
 
 elements.backupButton.addEventListener('click', backupActiveTable);
 
+elements.connectionFormHeader.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0 || event.target.closest('button')) return;
+  const rect = elements.connectionForm.getBoundingClientRect();
+  connectionFormDrag.active = true;
+  connectionFormDrag.pointerId = event.pointerId;
+  connectionFormDrag.offsetX = event.clientX - rect.left;
+  connectionFormDrag.offsetY = event.clientY - rect.top;
+  elements.connectionForm.classList.add('dragging');
+  elements.connectionFormHeader.setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+});
+
+elements.connectionFormHeader.addEventListener('pointermove', (event) => {
+  if (!connectionFormDrag.active || connectionFormDrag.pointerId !== event.pointerId) return;
+  moveConnectionForm(
+    event.clientX - connectionFormDrag.offsetX,
+    event.clientY - connectionFormDrag.offsetY
+  );
+});
+
+function stopConnectionFormDrag(event) {
+  if (!connectionFormDrag.active || connectionFormDrag.pointerId !== event.pointerId) return;
+  connectionFormDrag.active = false;
+  connectionFormDrag.pointerId = null;
+  elements.connectionForm.classList.remove('dragging');
+  elements.connectionFormHeader.releasePointerCapture?.(event.pointerId);
+}
+
+elements.connectionFormHeader.addEventListener('pointerup', stopConnectionFormDrag);
+elements.connectionFormHeader.addEventListener('pointercancel', stopConnectionFormDrag);
+
 elements.newConnectionButton.addEventListener('click', () => {
   openConnectionForm('mariadb');
 });
@@ -2739,17 +2955,39 @@ document.addEventListener('click', async (event) => {
   }
 });
 
+document.addEventListener('click', async (event) => {
+  const menu = event.target.closest('.row-context-menu');
+  if (!menu) {
+    closeRowContextMenu();
+    return;
+  }
+
+  const actionButton = event.target.closest('[data-row-context-action]');
+  if (actionButton?.dataset.rowContextAction === 'delete' && state.contextMenuRowIndex !== null) {
+    const rowIndex = state.contextMenuRowIndex;
+    closeRowContextMenu();
+    await deleteSelectedRows(rowIndex);
+  }
+});
+
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     closeConnectionContextMenu();
+    closeRowContextMenu();
   }
 });
 
 window.addEventListener('resize', () => {
   closeConnectionContextMenu();
+  closeRowContextMenu();
+  if (!elements.connectionForm.hidden && elements.connectionForm.style.transform === 'none') {
+    const rect = elements.connectionForm.getBoundingClientRect();
+    moveConnectionForm(rect.left, rect.top);
+  }
 });
 window.addEventListener('blur', () => {
   closeConnectionContextMenu();
+  closeRowContextMenu();
 });
 
 elements.connectionTypeSelect.addEventListener('change', () => {
@@ -3003,68 +3241,99 @@ elements.filterModeToggle.addEventListener('click', () => {
   const toColumn = filter.mode === 'text';
   filter.mode = toColumn ? 'column' : 'text';
   if (!toColumn) {
-    filter.column = '';
-    filter.operator = '=';
-    filter.value = '';
-    filter.valueTo = '';
+    filter.columnFilters = [createDefaultColumnFilterState()];
     syncFilterControls();
     loadActiveTable();
   } else {
     syncFilterControls();
-    elements.filterColumnSelect.focus();
+    elements.filterColumnRows.querySelector('select[data-filter-field="column"]')?.focus();
   }
 });
 
-elements.filterColumnSelect.addEventListener('change', () => {
-  const filter = getActiveFilter();
-  filter.column = elements.filterColumnSelect.value;
-  filter.value = '';
-  filter.valueTo = '';
-  syncFilterControls();
-  loadActiveTable();
+elements.filterColumnRows.addEventListener('change', (event) => {
+  const target = event.target;
+  const row = target.closest('.filter-column-row');
+  if (!row) return;
+
+  const index = Number(row.dataset.filterIndex);
+  const item = getColumnFilterAt(index);
+  if (!item) return;
+
+  if (target.dataset.filterField === 'column') {
+    item.column = target.value;
+    item.value = '';
+    item.valueTo = '';
+    syncFilterControls();
+    loadActiveTable();
+  } else if (target.dataset.filterField === 'operator') {
+    item.operator = target.value;
+    item.valueTo = '';
+    syncFilterControls();
+    if (item.value.trim()) loadActiveTable();
+  }
 });
 
-elements.filterOperatorSelect.addEventListener('change', () => {
-  const filter = getActiveFilter();
-  filter.operator = elements.filterOperatorSelect.value;
-  filter.valueTo = '';
-  syncFilterControls();
-  if (filter.value.trim()) loadActiveTable();
-});
+elements.filterColumnRows.addEventListener('input', (event) => {
+  const target = event.target;
+  const field = target.dataset.filterField;
+  if (field !== 'value' && field !== 'valueTo') return;
 
-elements.filterValueInput.addEventListener('input', () => {
-  const filter = getActiveFilter();
-  filter.value = elements.filterValueInput.value;
+  const row = target.closest('.filter-column-row');
+  const index = Number(row?.dataset.filterIndex);
+  const item = getColumnFilterAt(index);
+  if (!item) return;
+
+  item[field] = target.value;
   clearTimeout(state.filterTimer);
-  if (filter.column) state.filterTimer = setTimeout(loadActiveTable, 220);
+  if (item.column) state.filterTimer = setTimeout(loadActiveTable, 220);
 });
 
-elements.filterValueDateBtn.addEventListener('click', () => {
-  const dateType = getFilterColumnType();
-  if (!dateType) return;
-  const tabId = getActiveTab()?.id;
-  const filter = getActiveFilter();
-  openFilterDatePicker(dateType, filter.value, elements.filterValueDateBtn, (val) => {
-    const targetFilter = getFilterForTab(tabId);
-    targetFilter.value = val;
-    if (state.activeTabId === tabId) {
-      syncFilterControls();
-      if (targetFilter.operator !== 'BETWEEN' || targetFilter.valueTo.trim()) loadActiveTable();
-    }
-  });
-});
+elements.filterColumnRows.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-filter-action]');
+  if (!button) return;
 
-elements.filterValueToDateBtn.addEventListener('click', () => {
-  const dateType = getFilterColumnType();
-  if (!dateType) return;
-  const tabId = getActiveTab()?.id;
+  const action = button.dataset.filterAction;
   const filter = getActiveFilter();
-  openFilterDatePicker(dateType, filter.valueTo, elements.filterValueToDateBtn, (val) => {
-    const targetFilter = getFilterForTab(tabId);
-    targetFilter.valueTo = val;
+  const row = button.closest('.filter-column-row');
+  const index = Number(button.dataset.filterIndex ?? row?.dataset.filterIndex);
+
+  if (action === 'add') {
+    filter.columnFilters.push(createDefaultColumnFilterState());
+    syncFilterControls();
+    elements.filterColumnRows
+      .querySelector(`.filter-column-row[data-filter-index="${filter.columnFilters.length - 1}"] select[data-filter-field="column"]`)
+      ?.focus();
+    return;
+  }
+
+  if (action === 'remove') {
+    if (filter.columnFilters.length <= 1 || !Number.isInteger(index)) return;
+    filter.columnFilters.splice(index, 1);
+    syncFilterControls();
+    loadActiveTable();
+    return;
+  }
+
+  if (action !== 'date-from' && action !== 'date-to') return;
+  if (!Number.isInteger(index)) return;
+
+  const dateType = getFilterColumnType(index);
+  if (!dateType) return;
+
+  const tabId = getActiveTab()?.id;
+  const item = getColumnFilterAt(index);
+  const dateField = action === 'date-to' ? 'valueTo' : 'value';
+  openFilterDatePicker(dateType, item?.[dateField] || '', button, (val) => {
+    const targetItem = getColumnFilterAt(index, getFilterForTab(tabId));
+    if (!targetItem) return;
+    targetItem[dateField] = val;
     if (state.activeTabId === tabId) {
       syncFilterControls();
-      if (targetFilter.value.trim()) loadActiveTable();
+      if (dateField === 'valueTo') {
+        if (targetItem.value.trim()) loadActiveTable();
+      } else if (targetItem.operator !== 'BETWEEN' || targetItem.valueTo.trim()) {
+        loadActiveTable();
+      }
     }
   });
 });
@@ -3121,6 +3390,81 @@ function addPendingRow(tab, payload, values) {
   allPendingRows[allPendingRows.length - 1]?.querySelector('input')?.focus();
 }
 
+function getDeleteRowIndexes(tab, payload, preferredRowIndex = null) {
+  const selectedRows = state.selectedRowsByTab.get(tab.id) || new Set();
+  const rowCount = payload.rows?.length || 0;
+  const indexes = selectedRows.size && (preferredRowIndex === null || selectedRows.has(preferredRowIndex))
+    ? [...selectedRows]
+    : [preferredRowIndex];
+
+  return [...new Set(indexes)]
+    .filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < rowCount)
+    .sort((left, right) => left - right);
+}
+
+function buildDeleteOperations(payload, rowIndexes) {
+  const pkColumns = payload.columns.filter((col) => Number(col.pk));
+  const keyColumns = pkColumns.length ? pkColumns : payload.columns;
+
+  return rowIndexes.map((rowIndex) => {
+    const originalRow = payload.rows[rowIndex];
+    return {
+      whereValues: Object.fromEntries(keyColumns.map((col) => [col.name, originalRow[col.name] ?? null])),
+      limitOne: pkColumns.length === 0
+    };
+  });
+}
+
+async function deleteSelectedRows(preferredRowIndex = null) {
+  const tab = getActiveTab();
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  const connection = state.connections.find((item) => item.id === tab?.connectionId);
+  if (!tab || !payload || !connection || state.mode !== 'data') return;
+
+  if (payload.isSqlResult) {
+    showToast('Rijen uit een SQL-resultaat kunnen niet direct worden verwijderd.');
+    return;
+  }
+
+  if (connection.readOnly) {
+    showToast('Alleen lezen staat aan voor deze connectie.');
+    return;
+  }
+
+  const rowIndexes = getDeleteRowIndexes(tab, payload, preferredRowIndex);
+  if (!rowIndexes.length) return;
+
+  const label = rowIndexes.length === 1 ? '1 rij' : `${rowIndexes.length} rijen`;
+  if (!confirm(`${label} verwijderen uit "${tab.tableName}"?`)) return;
+
+  try {
+    const results = await window.sqlBase.deleteRows({
+      connection,
+      tableName: tab.tableName,
+      rows: buildDeleteOperations(payload, rowIndexes)
+    });
+    const failed = results
+      .map((result, index) => (result.ok ? null : `Rij ${index + 1}: ${result.error}`))
+      .filter(Boolean);
+
+    if (failed.length) {
+      showErrorDialog(failed.join('\n'));
+      state.selectedRowsByTab.delete(tab.id);
+      state.anchorRowByTab.delete(tab.id);
+      state.relationLookupByTab.delete(tab.id);
+      await loadActiveTable();
+    } else {
+      showToast(rowIndexes.length === 1 ? 'Rij verwijderd' : `${rowIndexes.length} rijen verwijderd`);
+      state.selectedRowsByTab.delete(tab.id);
+      state.anchorRowByTab.delete(tab.id);
+      state.relationLookupByTab.delete(tab.id);
+      await loadActiveTable();
+    }
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
 window.addEventListener('keydown', (e) => {
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
@@ -3128,7 +3472,9 @@ window.addEventListener('keydown', (e) => {
   const isArrow = e.key === 'ArrowDown' || e.key === 'ArrowUp';
   const isCopy = (e.metaKey || e.ctrlKey) && e.key === 'c';
   const isPaste = (e.metaKey || e.ctrlKey) && e.key === 'v';
-  if (!isArrow && !isCopy && !isPaste) return;
+  const isDelete = e.key === 'Delete';
+  if (!isArrow && !isCopy && !isPaste && !isDelete) return;
+  if (isBlockingDialogOpen()) return;
 
   const tab = getActiveTab();
   const payload = state.tablePayloadByTab.get(tab?.id);
@@ -3164,6 +3510,11 @@ window.addEventListener('keydown', (e) => {
     for (const row of state.copiedRows) {
       addPendingRow(tab, payload, row);
     }
+  } else if (isDelete) {
+    const selectedRows = state.selectedRowsByTab.get(tab.id);
+    if (!selectedRows?.size) return;
+    e.preventDefault();
+    deleteSelectedRows();
   }
 });
 
@@ -3274,6 +3625,12 @@ elements.dataTable.addEventListener('mousedown', (e) => {
   }
 
   if (e.shiftKey) e.preventDefault();
+});
+
+elements.dataTable.addEventListener('contextmenu', (event) => {
+  const row = event.target.closest('tbody tr[data-row-index]');
+  if (!row) return;
+  openRowContextMenu(event, Number(row.dataset.rowIndex));
 });
 
 elements.addRowButton.addEventListener('click', () => {

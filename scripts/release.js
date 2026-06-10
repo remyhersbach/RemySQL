@@ -9,6 +9,7 @@ const root = path.join(__dirname, '..');
 const packagePath = path.join(root, 'package.json');
 const lockPath = path.join(root, 'package-lock.json');
 const changelogPath = path.join(root, 'CHANGELOG.md');
+const releaseNotesPath = path.join(root, 'RELEASE_NOTES.md');
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const args = process.argv.slice(2);
 
@@ -41,13 +42,27 @@ function getGitStatus() {
   return getOutput('git', ['status', '--short']);
 }
 
-function assertCleanWorktree() {
-  const status = getGitStatus();
-  if (status) {
+function getStatusPath(statusLine) {
+  const pathPart = statusLine.slice(3).trim();
+  return pathPart.includes(' -> ') ? pathPart.split(' -> ').pop().trim() : pathPart;
+}
+
+function assertCleanWorktree(allowedDirtyPaths = []) {
+  const statusLines = getGitStatus().split(/\r?\n/).filter(Boolean);
+  const disallowed = statusLines.filter((line) => !allowedDirtyPaths.includes(getStatusPath(line)));
+  if (disallowed.length) {
     console.error('Release gestopt: je git worktree is niet schoon.');
-    console.error(status);
+    console.error(disallowed.join('\n'));
     console.error('\nCommit/stash eerst je lopende werk, zodat de release-commit alleen release-wijzigingen bevat.');
+    if (allowedDirtyPaths.length) {
+      console.error(`Toegestaan vooraf aangepast: ${allowedDirtyPaths.join(', ')}`);
+    }
     process.exit(1);
+  }
+  const allowedDirty = statusLines.filter((line) => allowedDirtyPaths.includes(getStatusPath(line)));
+  if (allowedDirty.length) {
+    console.log('\nVooraf aangepaste releasebestanden worden meegenomen:');
+    console.log(allowedDirty.join('\n'));
   }
 }
 
@@ -124,6 +139,37 @@ function getChangelogBulletCount(version) {
     .length;
 }
 
+function getReleaseNotesTemplate() {
+  return [
+    '# RemySQL {{tag}}',
+    '',
+    '## Wijzigingen',
+    '',
+    '- '
+  ].join('\n');
+}
+
+function ensureReleaseNotesFile() {
+  if (existsSync(releaseNotesPath)) return false;
+  writeFileSync(releaseNotesPath, `${getReleaseNotesTemplate()}\n`);
+  return true;
+}
+
+function readReleaseNotes(version, tag) {
+  return readFileSync(releaseNotesPath, 'utf8')
+    .replaceAll('{{version}}', version)
+    .replaceAll('{{tag}}', tag)
+    .trim();
+}
+
+function getReleaseNotesBulletCount(version, tag) {
+  return readReleaseNotes(version, tag)
+    .split(/\r?\n/)
+    .filter((line) => /^\s*[-*]\s+\S/.test(line))
+    .filter((line) => !/^\s*[-*]\s*$/.test(line))
+    .length;
+}
+
 async function prompt(question, fallback = '') {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -163,6 +209,27 @@ async function prepareChangelog(version) {
   }
   if (!getChangelogBulletCount(version)) {
     console.log(`Geen changelog-bullets voor ${version}; release gaat door zonder inhoudelijke changelog-notes.`);
+  }
+}
+
+async function prepareReleaseNotes(version, tag) {
+  const created = ensureReleaseNotesFile();
+  if (created) {
+    console.log('\nRELEASE_NOTES.md template toegevoegd.');
+  }
+
+  if (!openEditorIfAvailable(releaseNotesPath)) {
+    console.log('\nRELEASE_NOTES.md wordt gebruikt als GitHub Release-body.');
+    console.log('Bewerk dit bestand handmatig voordat je releaset. Tokens {{version}} en {{tag}} worden automatisch ingevuld.');
+    await prompt('Druk op Enter om door te gaan.');
+  }
+
+  if (!readReleaseNotes(version, tag)) {
+    throw new Error('RELEASE_NOTES.md is leeg.');
+  }
+
+  if (!getReleaseNotesBulletCount(version, tag)) {
+    throw new Error('RELEASE_NOTES.md heeft nog geen ingevulde bullets.');
   }
 }
 
@@ -253,9 +320,7 @@ async function getReleaseByTag(repo, tag) {
 }
 
 async function ensureGitHubRelease(repo, tag, version) {
-  const releaseBody = getChangelogBulletCount(version)
-    ? getChangelogSection(version).trim()
-    : `Release ${tag}.`;
+  const releaseBody = readReleaseNotes(version, tag);
   const existing = await getReleaseByTag(repo, tag);
   if (existing) {
     return githubRequest(repo, `/releases/${existing.id}`, {
@@ -336,7 +401,7 @@ async function main() {
   const rawBump = args.find((arg) => !arg.startsWith('--'));
   const pkg = readJson(packagePath);
 
-  assertCleanWorktree();
+  assertCleanWorktree(['RELEASE_NOTES.md']);
 
   const bump = rawBump || await prompt(`Nieuwe versie vanaf ${pkg.version} (patch/minor/major/x.y.z) [patch] `, 'patch');
   const nextVersion = bumpVersion(pkg.version, bump);
@@ -356,6 +421,7 @@ async function main() {
   console.log(`\nRelease voorbereiden: ${pkg.version} -> ${nextVersion}`);
   updatePackageVersions(nextVersion);
   await prepareChangelog(nextVersion);
+  await prepareReleaseNotes(nextVersion, tag);
 
   run('node', ['--check', 'src/main.js']);
   run('node', ['--check', 'src/renderer/app.js']);
@@ -375,7 +441,7 @@ async function main() {
   console.log('\nDMG gebouwd:');
   for (const dmg of dmgs) console.log(`- ${dmg}`);
 
-  run('git', ['add', 'package.json', 'package-lock.json', 'CHANGELOG.md']);
+  run('git', ['add', 'package.json', 'package-lock.json', 'CHANGELOG.md', 'RELEASE_NOTES.md']);
   const changed = getGitStatus();
   if (!changed) {
     throw new Error('Geen release-wijzigingen gevonden om te committen.');

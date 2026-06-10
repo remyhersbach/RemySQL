@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('sqlBase', {
   loadRelationRows: (payload) => ipcRenderer.invoke('database:relation-rows', payload),
   insertRows: (payload) => ipcRenderer.invoke('database:insert-rows', payload),
   updateRows: (payload) => ipcRenderer.invoke('database:update-rows', payload),
+  deleteRows: (payload) => ipcRenderer.invoke('database:delete-rows', payload),
   runSql: (payload) => ipcRenderer.invoke('database:run-sql', payload),
   backupTable: (payload) => ipcRenderer.invoke('database:backup-table', payload),
   onNewMariaDbConnection: (callback) => {
