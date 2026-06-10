@@ -51,6 +51,7 @@ const isHexColor = (value) => /^#[0-9a-f]{6}$/i.test(String(value || ''));
 const connectionColors = new Set(['#ffffff', '#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#64748b']);
 const isConnectionColor = (value) => connectionColors.has(String(value || '').toLowerCase());
 const encryptedConnectionsVersion = 1;
+let connectionsCache = null;
 const packageJson = require('../package.json');
 const githubRepo = getGitHubRepoFromPackage(packageJson);
 
@@ -177,23 +178,38 @@ function decryptConnections(payload) {
   return Array.isArray(connections) ? connections : [];
 }
 
+function cloneConnections(connections) {
+  return connections.map((connection) => ({
+    ...connection,
+    ...(connection.sshTunnel ? { sshTunnel: { ...connection.sshTunnel } } : {})
+  }));
+}
+
 function readConnections() {
+  if (connectionsCache) {
+    return cloneConnections(connectionsCache);
+  }
+
   const filePath = getConnectionsPath();
   if (!existsSync(filePath)) {
+    connectionsCache = [];
     return [];
   }
 
   try {
     const payload = JSON.parse(readFileSync(filePath, 'utf8'));
     const connections = payload?.encrypted && payload?.data ? decryptConnections(payload) : [];
-    return normalizeConnectionPositions(connections);
+    connectionsCache = normalizeConnectionPositions(connections);
+    return cloneConnections(connectionsCache);
   } catch (error) {
     throw new Error(`Connecties konden niet worden gelezen: ${error.message}`);
   }
 }
 
 function writeConnections(connections) {
-  writeFileSync(getConnectionsPath(), JSON.stringify(encryptConnections(normalizeConnectionPositions(connections)), null, 2));
+  const normalized = normalizeConnectionPositions(connections);
+  writeFileSync(getConnectionsPath(), JSON.stringify(encryptConnections(normalized), null, 2));
+  connectionsCache = normalized;
 }
 
 function getNextGroupName(connections) {

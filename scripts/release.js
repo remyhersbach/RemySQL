@@ -91,35 +91,27 @@ function getVersionSectionRegex(version) {
   return new RegExp(`^##\\s+v?${escaped}(?:\\s+-\\s+.*)?$`, 'm');
 }
 
-function insertChangelogTemplate(version) {
+function upsertChangelogSection(version, body) {
   let changelog = existsSync(changelogPath)
     ? readFileSync(changelogPath, 'utf8')
     : '# Changelog\n\nAlle noemenswaardige wijzigingen in RemySQL staan in dit bestand.\n';
+  const section = [`## ${version} - ${todayIsoDate()}`, '', body.trim(), ''].join('\n');
+  const sectionStart = changelog.search(getVersionSectionRegex(version));
 
-  if (getVersionSectionRegex(version).test(changelog)) {
-    return false;
+  if (sectionStart === -1) {
+    const firstReleaseIndex = changelog.search(/^##\s+/m);
+    changelog = firstReleaseIndex === -1
+      ? `${changelog.trim()}\n\n${section}\n`
+      : `${changelog.slice(0, firstReleaseIndex).trim()}\n\n${section}\n${changelog.slice(firstReleaseIndex)}`;
+    writeFileSync(changelogPath, changelog);
+    return;
   }
 
-  const template = [
-    `## ${version} - ${todayIsoDate()}`,
-    '',
-    '### Toegevoegd',
-    '',
-    '### Gewijzigd',
-    '',
-    '### Opgelost',
-    ''
-  ].join('\n');
-
-  const firstReleaseIndex = changelog.search(/^##\s+/m);
-  if (firstReleaseIndex === -1) {
-    changelog = `${changelog.trim()}\n\n${template}\n`;
-  } else {
-    changelog = `${changelog.slice(0, firstReleaseIndex).trim()}\n\n${template}\n${changelog.slice(firstReleaseIndex)}`;
-  }
-
+  const rest = changelog.slice(sectionStart);
+  const nextSection = rest.slice(1).search(/^##\s+/m);
+  const sectionEnd = nextSection === -1 ? changelog.length : sectionStart + nextSection + 1;
+  changelog = `${changelog.slice(0, sectionStart)}${section}${changelog.slice(sectionEnd)}`;
   writeFileSync(changelogPath, changelog);
-  return true;
 }
 
 function getChangelogSection(version) {
@@ -162,6 +154,17 @@ function readReleaseNotes(version, tag) {
     .trim();
 }
 
+function getReleaseNotesChangelogBody(version, tag) {
+  const lines = readReleaseNotes(version, tag).split(/\r?\n/);
+  while (lines.length && !lines[0].trim()) lines.shift();
+  if (/^#\s+/.test(lines[0] || '')) lines.shift();
+  while (lines.length && !lines[0].trim()) lines.shift();
+  return lines
+    .map((line) => line.replace(/^##\s+/, '### '))
+    .join('\n')
+    .trim();
+}
+
 function getReleaseNotesBulletCount(version, tag) {
   return readReleaseNotes(version, tag)
     .split(/\r?\n/)
@@ -191,24 +194,15 @@ function openEditorIfAvailable(filePath) {
   return true;
 }
 
-async function prepareChangelog(version) {
-  const inserted = insertChangelogTemplate(version);
-  if (inserted) {
-    console.log(`\nCHANGELOG.md template toegevoegd voor ${version}.`);
-  }
-
-  if (!openEditorIfAvailable(changelogPath)) {
-    console.log('\nCHANGELOG.md is voorbereid voor deze release.');
-    console.log('Je kunt hem nu aanpassen, of leeg laten voor een release zonder changelog-notes.');
-    await prompt('Druk op Enter om door te gaan.');
-  }
-
+function prepareChangelog(version, tag) {
+  upsertChangelogSection(version, getReleaseNotesChangelogBody(version, tag));
+  console.log(`\nCHANGELOG.md bijgewerkt vanuit RELEASE_NOTES.md voor ${version}.`);
   const section = getChangelogSection(version);
   if (!section) {
     throw new Error(`CHANGELOG.md mist een sectie voor ${version}.`);
   }
   if (!getChangelogBulletCount(version)) {
-    console.log(`Geen changelog-bullets voor ${version}; release gaat door zonder inhoudelijke changelog-notes.`);
+    throw new Error(`CHANGELOG.md heeft geen bullets voor ${version}.`);
   }
 }
 
@@ -420,8 +414,8 @@ async function main() {
 
   console.log(`\nRelease voorbereiden: ${pkg.version} -> ${nextVersion}`);
   updatePackageVersions(nextVersion);
-  await prepareChangelog(nextVersion);
   await prepareReleaseNotes(nextVersion, tag);
+  prepareChangelog(nextVersion, tag);
 
   run('node', ['--check', 'src/main.js']);
   run('node', ['--check', 'src/renderer/app.js']);
