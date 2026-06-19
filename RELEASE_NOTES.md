@@ -1,4 +1,6 @@
 # RemySQL {{tag}}
 
 ## Wijzigingen
-- Kleine geitjes
+- Filters verbeterd
+- Close button voor alle tabs toegevoegd
+- Rechtermuisklik truncate table toegevoegd

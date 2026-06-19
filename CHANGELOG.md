@@ -4,6 +4,13 @@ Alle noemenswaardige wijzigingen in RemySQL staan in dit bestand.
 
 Gebruik per release een kop zoals `## 0.2.4 - 2026-05-31`. Het release-script vult de inhoud vanuit `RELEASE_NOTES.md`.
 
+## 0.2.13 - 2026-06-19
+
+### Wijzigingen
+- Filters verbeterd
+- Close button voor alle tabs toegevoegd
+- Rechtermuisklik truncate table toegevoegd
+
 ## 0.2.12 - 2026-06-10
 
 ### Wijzigingen
