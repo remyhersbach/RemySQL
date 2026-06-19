@@ -3,7 +3,7 @@ const { execFile, spawn } = require('node:child_process');
 const { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync, readdirSync } = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { createCipheriv, createDecipheriv, randomBytes, randomUUID } = require('node:crypto');
 app.name = 'RemySQL';
 
 let mariadb;
@@ -11,6 +11,8 @@ let pty;
 
 let mainWindow;
 const sshSessions = new Map();
+let connectionsCryptoKey = null;
+let encryptedConnectionsKey = null;
 
 function ensurePtySpawnHelperExecutable() {
   if (process.platform !== 'darwin') {
@@ -50,7 +52,7 @@ const quoteLiteral = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const isHexColor = (value) => /^#[0-9a-f]{6}$/i.test(String(value || ''));
 const connectionColors = new Set(['#ffffff', '#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#64748b']);
 const isConnectionColor = (value) => connectionColors.has(String(value || '').toLowerCase());
-const encryptedConnectionsVersion = 1;
+const encryptedConnectionsVersion = 2;
 const packageJson = require('../package.json');
 const githubRepo = getGitHubRepoFromPackage(packageJson);
 
@@ -158,23 +160,112 @@ function assertCanEncryptConnections() {
   }
 }
 
-function encryptConnections(connections) {
+function parseConnectionsJson(text) {
+  const connections = JSON.parse(text);
+  return Array.isArray(connections) ? connections : [];
+}
+
+function decryptConnectionsKey(encryptedKey) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Connecties kunnen niet worden gelezen: OS-versleuteling is niet beschikbaar.');
+  }
+
+  const keyText = safeStorage.decryptString(Buffer.from(encryptedKey, 'base64'));
+  const key = Buffer.from(keyText, 'base64');
+  if (key.length !== 32) {
+    throw new Error('Opgeslagen connectiesleutel heeft een ongeldig formaat.');
+  }
+  return key;
+}
+
+function ensureConnectionsCryptoKey(payload = null) {
+  if (connectionsCryptoKey) {
+    return connectionsCryptoKey;
+  }
+
+  if (payload?.version === 2 && payload?.key) {
+    encryptedConnectionsKey = payload.key;
+    connectionsCryptoKey = decryptConnectionsKey(payload.key);
+    return connectionsCryptoKey;
+  }
+
   assertCanEncryptConnections();
+  connectionsCryptoKey = randomBytes(32);
+  encryptedConnectionsKey = safeStorage.encryptString(connectionsCryptoKey.toString('base64')).toString('base64');
+  return connectionsCryptoKey;
+}
+
+function encryptConnections(connections) {
+  const key = ensureConnectionsCryptoKey();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const data = Buffer.concat([
+    cipher.update(JSON.stringify(connections), 'utf8'),
+    cipher.final()
+  ]);
+
   return {
     version: encryptedConnectionsVersion,
     encrypted: true,
-    data: safeStorage.encryptString(JSON.stringify(connections)).toString('base64')
+    algorithm: 'aes-256-gcm',
+    key: encryptedConnectionsKey,
+    iv: iv.toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+    data: data.toString('base64')
   };
 }
 
-function decryptConnections(payload) {
+function decryptSafeStorageConnections(payload) {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('Connecties kunnen niet worden gelezen: OS-versleuteling is niet beschikbaar.');
   }
 
   const decrypted = safeStorage.decryptString(Buffer.from(payload.data, 'base64'));
-  const connections = JSON.parse(decrypted);
-  return Array.isArray(connections) ? connections : [];
+  return parseConnectionsJson(decrypted);
+}
+
+function decryptAesConnections(payload) {
+  const key = ensureConnectionsCryptoKey(payload);
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(payload.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(payload.tag, 'base64'));
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(payload.data, 'base64')),
+    decipher.final()
+  ]).toString('utf8');
+  return parseConnectionsJson(decrypted);
+}
+
+function isAesConnectionsPayload(payload) {
+  return payload?.version === 2
+    && payload?.algorithm === 'aes-256-gcm'
+    && payload?.key
+    && payload?.iv
+    && payload?.tag
+    && payload?.data;
+}
+
+function getLegacyPlainConnections(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (Array.isArray(payload?.connections)) {
+    return payload.connections;
+  }
+
+  return [];
+}
+
+function decryptConnections(payload) {
+  if (isAesConnectionsPayload(payload)) {
+    return decryptAesConnections(payload);
+  }
+
+  if (payload?.encrypted && payload?.data) {
+    return decryptSafeStorageConnections(payload);
+  }
+
+  return getLegacyPlainConnections(payload);
 }
 
 function readConnections() {
@@ -185,8 +276,7 @@ function readConnections() {
 
   try {
     const payload = JSON.parse(readFileSync(filePath, 'utf8'));
-    const connections = payload?.encrypted && payload?.data ? decryptConnections(payload) : [];
-    return normalizeConnectionPositions(connections);
+    return normalizeConnectionPositions(decryptConnections(payload));
   } catch (error) {
     throw new Error(`Connecties konden niet worden gelezen: ${error.message}`);
   }
