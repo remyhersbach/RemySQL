@@ -4,6 +4,10 @@ Alle noemenswaardige wijzigingen in RemySQL staan in dit bestand.
 
 Gebruik per release een kop zoals `## 0.2.4 - 2026-05-31`. Het release-script vult de inhoud vanuit `RELEASE_NOTES.md`.
 
+## 0.2.14 - 2026-06-19
+
+### Wijzigingen
+
 ## 0.2.13 - 2026-06-19
 
 ### Wijzigingen
