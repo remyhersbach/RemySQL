@@ -3,7 +3,7 @@ const { execFile, spawn } = require('node:child_process');
 const { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync, readdirSync } = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
-const { createCipheriv, createDecipheriv, randomBytes, randomUUID } = require('node:crypto');
+const { randomUUID } = require('node:crypto');
 app.name = 'RemySQL';
 
 let mariadb;
@@ -11,17 +11,6 @@ let pty;
 
 let mainWindow;
 const sshSessions = new Map();
-
-const singleInstanceLock = app.requestSingleInstanceLock();
-if (!singleInstanceLock) {
-  app.quit();
-} else {
-  app.on('second-instance', () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
-  });
-}
 
 function ensurePtySpawnHelperExecutable() {
   if (process.platform !== 'darwin') {
@@ -61,11 +50,7 @@ const quoteLiteral = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const isHexColor = (value) => /^#[0-9a-f]{6}$/i.test(String(value || ''));
 const connectionColors = new Set(['#ffffff', '#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#64748b']);
 const isConnectionColor = (value) => connectionColors.has(String(value || '').toLowerCase());
-const encryptedConnectionsVersion = 2;
-let connectionsCache = null;
-let connectionsPublicCache = null;
-let connectionsCryptoKey = null;
-let encryptedConnectionsKey = null;
+const encryptedConnectionsVersion = 1;
 const packageJson = require('../package.json');
 const githubRepo = getGitHubRepoFromPackage(packageJson);
 
@@ -167,67 +152,18 @@ function getConnectionsPath() {
   return path.join(dir, 'connections.json');
 }
 
-function getConnectionsIndexPath() {
-  const dir = app.getPath('userData');
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  return path.join(dir, 'connections.index.json');
-}
-
 function assertCanEncryptConnections() {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('Connecties kunnen niet veilig worden opgeslagen: OS-versleuteling is niet beschikbaar.');
   }
 }
 
-function decryptConnectionsKey(encryptedKey) {
-  if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error('Connecties kunnen niet worden gelezen: OS-versleuteling is niet beschikbaar.');
-  }
-
-  const keyText = safeStorage.decryptString(Buffer.from(encryptedKey, 'base64'));
-  const key = Buffer.from(keyText, 'base64');
-  if (key.length !== 32) {
-    throw new Error('Opgeslagen connectiesleutel heeft een ongeldig formaat.');
-  }
-  return key;
-}
-
-function ensureConnectionsCryptoKey(payload = null) {
-  if (connectionsCryptoKey) {
-    return connectionsCryptoKey;
-  }
-
-  if (payload?.version === 2 && payload?.key) {
-    encryptedConnectionsKey = payload.key;
-    connectionsCryptoKey = decryptConnectionsKey(payload.key);
-    return connectionsCryptoKey;
-  }
-
-  assertCanEncryptConnections();
-  connectionsCryptoKey = randomBytes(32);
-  encryptedConnectionsKey = safeStorage.encryptString(connectionsCryptoKey.toString('base64')).toString('base64');
-  return connectionsCryptoKey;
-}
-
 function encryptConnections(connections) {
-  const key = ensureConnectionsCryptoKey();
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', key, iv);
-  const data = Buffer.concat([
-    cipher.update(JSON.stringify(connections), 'utf8'),
-    cipher.final()
-  ]);
-
+  assertCanEncryptConnections();
   return {
     version: encryptedConnectionsVersion,
     encrypted: true,
-    algorithm: 'aes-256-gcm',
-    key: encryptedConnectionsKey,
-    iv: iv.toString('base64'),
-    tag: cipher.getAuthTag().toString('base64'),
-    data: data.toString('base64')
+    data: safeStorage.encryptString(JSON.stringify(connections)).toString('base64')
   };
 }
 
@@ -236,131 +172,28 @@ function decryptConnections(payload) {
     throw new Error('Connecties kunnen niet worden gelezen: OS-versleuteling is niet beschikbaar.');
   }
 
-  if (payload?.version === 2 && payload?.key && payload?.iv && payload?.tag && payload?.data) {
-    const key = ensureConnectionsCryptoKey(payload);
-    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(payload.iv, 'base64'));
-    decipher.setAuthTag(Buffer.from(payload.tag, 'base64'));
-    const decrypted = Buffer.concat([
-      decipher.update(Buffer.from(payload.data, 'base64')),
-      decipher.final()
-    ]).toString('utf8');
-    const connections = JSON.parse(decrypted);
-    return Array.isArray(connections) ? connections : [];
-  }
-
   const decrypted = safeStorage.decryptString(Buffer.from(payload.data, 'base64'));
   const connections = JSON.parse(decrypted);
   return Array.isArray(connections) ? connections : [];
 }
 
-function cloneConnections(connections) {
-  return connections.map((connection) => ({
-    ...connection,
-    ...(connection.sshTunnel ? { sshTunnel: { ...connection.sshTunnel } } : {})
-  }));
-}
-
-function sanitizeConnectionForList(connection) {
-  const { password, ...safeConnection } = connection;
-  if (safeConnection.sshTunnel) {
-    const { password: tunnelPassword, ...safeTunnel } = safeConnection.sshTunnel;
-    safeConnection.sshTunnel = safeTunnel;
-  }
-  return safeConnection;
-}
-
-function sanitizeConnectionsForList(connections) {
-  return normalizeConnectionPositions(connections).map(sanitizeConnectionForList);
-}
-
-function readConnectionsIndex() {
-  const filePath = getConnectionsIndexPath();
-  if (!existsSync(filePath)) return null;
-  const payload = JSON.parse(readFileSync(filePath, 'utf8'));
-  const connections = Array.isArray(payload?.connections) ? payload.connections : [];
-  return normalizeConnectionPositions(connections);
-}
-
-function writeConnectionsIndex(connections) {
-  const publicConnections = sanitizeConnectionsForList(connections);
-  writeFileSync(getConnectionsIndexPath(), JSON.stringify({
-    version: 1,
-    connections: publicConnections
-  }, null, 2));
-  connectionsPublicCache = publicConnections;
-}
-
-function mergeStoredSecrets(connection, storedConnection) {
-  if (!storedConnection) return connection;
-  const next = { ...connection };
-  if (!next.password && storedConnection.password) {
-    next.password = storedConnection.password;
-  }
-  if (next.sshTunnel && storedConnection.sshTunnel) {
-    next.sshTunnel = {
-      ...next.sshTunnel,
-      ...(!next.sshTunnel.password && storedConnection.sshTunnel.password
-        ? { password: storedConnection.sshTunnel.password }
-        : {})
-    };
-  }
-  return next;
-}
-
-function hydrateConnection(connection) {
-  if (!connection?.id) return connection;
-  const stored = readConnections(true).find((item) => item.id === connection.id);
-  return mergeStoredSecrets(connection, stored);
-}
-
-function readConnections(includeSecrets = true) {
-  if (!includeSecrets) {
-    if (connectionsPublicCache) {
-      return cloneConnections(connectionsPublicCache);
-    }
-
-    try {
-      const indexedConnections = readConnectionsIndex();
-      if (indexedConnections) {
-        connectionsPublicCache = indexedConnections;
-        return cloneConnections(connectionsPublicCache);
-      }
-    } catch {
-      connectionsPublicCache = null;
-    }
-
-    const connections = readConnections(true);
-    writeConnectionsIndex(connections);
-    return cloneConnections(connectionsPublicCache);
-  }
-
-  if (connectionsCache) {
-    return cloneConnections(connectionsCache);
-  }
-
+function readConnections() {
   const filePath = getConnectionsPath();
   if (!existsSync(filePath)) {
-    connectionsCache = [];
-    connectionsPublicCache = [];
     return [];
   }
 
   try {
     const payload = JSON.parse(readFileSync(filePath, 'utf8'));
     const connections = payload?.encrypted && payload?.data ? decryptConnections(payload) : [];
-    connectionsCache = normalizeConnectionPositions(connections);
-    writeConnectionsIndex(connectionsCache);
-    return cloneConnections(connectionsCache);
+    return normalizeConnectionPositions(connections);
   } catch (error) {
     throw new Error(`Connecties konden niet worden gelezen: ${error.message}`);
   }
 }
 
 function writeConnections(connections) {
-  const normalized = normalizeConnectionPositions(connections);
-  writeFileSync(getConnectionsPath(), JSON.stringify(encryptConnections(normalized), null, 2));
-  connectionsCache = normalized;
-  writeConnectionsIndex(normalized);
+  writeFileSync(getConnectionsPath(), JSON.stringify(encryptConnections(normalizeConnectionPositions(connections)), null, 2));
 }
 
 function getNextGroupName(connections) {
@@ -1417,6 +1250,54 @@ async function insertMariaRow(connection, tableName, values) {
   return runMariaDb(connection, `INSERT INTO ${quoteMariaIdentifier(tableName)} (${cols}) VALUES (${placeholders});`, vals);
 }
 
+function assertWritableConnection(connection) {
+  if (connection.readOnly) {
+    throw new Error('Alleen lezen staat aan voor deze connectie.');
+  }
+}
+
+function assertTruncatableTable(table) {
+  const type = String(table?.type || '').toLowerCase();
+  if (!table || (type !== 'table' && type !== 'base table')) {
+    throw new Error('Alleen echte tabellen kunnen worden geleegd.');
+  }
+}
+
+async function truncateSqliteTable(databasePath, tableName) {
+  const tables = await getSqliteTables(databasePath);
+  assertTruncatableTable(tables.find((item) => item.name === tableName));
+  await runSqlite(databasePath, `DELETE FROM ${quoteSqliteIdentifier(tableName)};`);
+
+  const sequenceTables = await runSqlite(
+    databasePath,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence';"
+  );
+  if (sequenceTables.length) {
+    await runSqlite(databasePath, `DELETE FROM sqlite_sequence WHERE name = ${quoteLiteral(tableName)};`);
+  }
+}
+
+async function truncateMariaTable(connection, tableName) {
+  const tables = await getMariaTables(connection);
+  assertTruncatableTable(tables.find((item) => item.name === tableName));
+  await runMariaDb(connection, `TRUNCATE TABLE ${quoteMariaIdentifier(tableName)};`);
+}
+
+async function truncateTable(connection, tableName) {
+  assertWritableConnection(connection);
+  if (!tableName) {
+    throw new Error('Geen tabel gekozen.');
+  }
+
+  if (connection.type === 'sqlite') {
+    await truncateSqliteTable(connection.path, tableName);
+    return { ok: true };
+  }
+
+  await truncateMariaTable(connection, tableName);
+  return { ok: true };
+}
+
 function normalizeConnection(connection) {
   const type = ['sqlite', 'ssh'].includes(connection.type) ? connection.type : 'mariadb';
   const backgroundColor = isHexColor(connection.backgroundColor) ? connection.backgroundColor : null;
@@ -1686,7 +1567,7 @@ function createMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-ipcMain.handle('connections:list', () => readConnections(false));
+ipcMain.handle('connections:list', () => readConnections());
 
 ipcMain.handle('app:info', () => ({
   name: app.name,
@@ -1707,10 +1588,9 @@ ipcMain.handle('app:open-external', async (_event, url) => {
 });
 
 ipcMain.handle('connections:add', async (_event, connection) => {
-  const connections = readConnections(true);
-  const existing = connection?.id ? connections.find((item) => item.id === connection.id) : null;
-  const normalized = mergeStoredSecrets(normalizeConnection(connection), existing);
+  const normalized = normalizeConnection(connection);
   const tables = normalized.type === 'ssh' ? [] : await getTables(normalized);
+  const connections = readConnections();
   const nextConnections = normalizeConnectionPositions([
     normalized,
     ...connections.filter((item) => item.id !== normalized.id && !sameConnection(item, normalized))
@@ -1718,19 +1598,19 @@ ipcMain.handle('connections:add', async (_event, connection) => {
   writeConnections(nextConnections);
 
   return {
-    connection: sanitizeConnectionForList(nextConnections.find((item) => item.id === normalized.id) || normalized),
+    connection: nextConnections.find((item) => item.id === normalized.id) || normalized,
     tables
   };
 });
 
 ipcMain.handle('connections:remove', (_event, connectionId) => {
-  const nextConnections = readConnections(true).filter((connection) => connection.id !== connectionId);
+  const nextConnections = readConnections().filter((connection) => connection.id !== connectionId);
   writeConnections(nextConnections);
-  return sanitizeConnectionsForList(nextConnections);
+  return nextConnections;
 });
 
 ipcMain.handle('connections:duplicate', async (_event, connectionId) => {
-  const connections = readConnections(true);
+  const connections = readConnections();
   const source = connections.find((connection) => connection.id === connectionId);
   if (!source) {
     throw new Error('Connectie niet gevonden.');
@@ -1747,7 +1627,7 @@ ipcMain.handle('connections:duplicate', async (_event, connectionId) => {
   writeConnections(nextConnections);
 
   return {
-    connection: sanitizeConnectionForList(nextConnections.find((item) => item.id === duplicate.id) || duplicate),
+    connection: nextConnections.find((item) => item.id === duplicate.id) || duplicate,
     tables
   };
 });
@@ -1757,7 +1637,7 @@ ipcMain.handle('connections:update-background', (_event, { connectionId, backgro
     throw new Error('Ongeldige kleur.');
   }
 
-  const connections = readConnections(true);
+  const connections = readConnections();
   const nextConnections = connections.map((connection) => (
     connection.id === connectionId
       ? { ...connection, backgroundColor }
@@ -1765,29 +1645,29 @@ ipcMain.handle('connections:update-background', (_event, { connectionId, backgro
   ));
 
   writeConnections(nextConnections);
-  return sanitizeConnectionsForList(nextConnections);
+  return nextConnections;
 });
 
 ipcMain.handle('connections:group', (_event, { sourceConnectionId, targetConnectionId }) => {
-  const { connections: nextConnections, groupId } = groupConnectionList(readConnections(true), sourceConnectionId, targetConnectionId);
+  const { connections: nextConnections, groupId } = groupConnectionList(readConnections(), sourceConnectionId, targetConnectionId);
 
   writeConnections(nextConnections);
-  return { connections: sanitizeConnectionsForList(nextConnections), groupId };
+  return { connections: nextConnections, groupId };
 });
 
 ipcMain.handle('connections:move', (_event, { sourceConnectionId, targetConnectionId, targetGroupId, placement }) => {
   const normalizedPlacement = ['before', 'after', 'inside'].includes(placement) ? placement : 'after';
-  const connections = readConnections(true);
+  const connections = readConnections();
   const source = connections.find((connection) => connection.id === sourceConnectionId);
 
   if (!source) {
-    return sanitizeConnectionsForList(connections);
+    return connections;
   }
 
   if (normalizedPlacement === 'inside') {
     const { connections: nextConnections } = groupConnectionList(connections, sourceConnectionId, targetConnectionId);
     writeConnections(nextConnections);
-    return sanitizeConnectionsForList(nextConnections);
+    return nextConnections;
   }
 
   const delta = normalizedPlacement === 'before' ? -0.1 : 0.1;
@@ -1799,7 +1679,7 @@ ipcMain.handle('connections:move', (_event, { sourceConnectionId, targetConnecti
     : null;
 
   if (!target && !targetGroupEntry) {
-    return sanitizeConnectionsForList(connections);
+    return connections;
   }
 
   const nextConnections = normalizeConnectionPositions(connections.map((connection) => {
@@ -1828,7 +1708,7 @@ ipcMain.handle('connections:move', (_event, { sourceConnectionId, targetConnecti
   }));
 
   writeConnections(nextConnections);
-  return sanitizeConnectionsForList(nextConnections);
+  return nextConnections;
 });
 
 ipcMain.handle('connections:update-group-name', (_event, { groupId, groupName }) => {
@@ -1836,21 +1716,21 @@ ipcMain.handle('connections:update-group-name', (_event, { groupId, groupName })
   const normalizedGroupName = String(groupName || '').trim() || 'Groep';
 
   if (!normalizedGroupId) {
-    return readConnections(false);
+    return readConnections();
   }
 
-  const nextConnections = normalizeConnectionPositions(readConnections(true).map((connection) => (
+  const nextConnections = normalizeConnectionPositions(readConnections().map((connection) => (
     connection.groupId === normalizedGroupId
       ? { ...connection, groupName: normalizedGroupName }
       : connection
   )));
 
   writeConnections(nextConnections);
-  return sanitizeConnectionsForList(nextConnections);
+  return nextConnections;
 });
 
 ipcMain.handle('ssh:start', (_event, payload) => {
-  const connection = hydrateConnection(payload?.connection || payload);
+  const connection = payload?.connection || payload;
   const cols = clamp(payload?.cols || 100, 20, 300);
   const rows = clamp(payload?.rows || 30, 5, 120);
   const normalized = normalizeConnection({ ...connection, type: 'ssh' });
@@ -1913,7 +1793,7 @@ ipcMain.handle('ssh:start', (_event, payload) => {
 });
 
 ipcMain.handle('ssh:open-terminal', async (_event, connection) => {
-  const normalized = normalizeConnection({ ...hydrateConnection(connection), type: 'ssh' });
+  const normalized = normalizeConnection({ ...connection, type: 'ssh' });
   const command = buildSshTerminalCommand(normalized);
   const title = String(normalized.name || getConnectionLabel(normalized)).replaceAll('"', '\\"');
   const script = [
@@ -1968,19 +1848,16 @@ ipcMain.handle('ssh:stop', (_event, sessionId) => {
 });
 
 ipcMain.handle('database:schema', async (_event, connection) => {
-  connection = hydrateConnection(connection);
   const tables = await getTables(connection);
   return { tables };
 });
 
 ipcMain.handle('database:relation-rows', async (_event, { connection, tableName, columnName, value }) => {
-  connection = hydrateConnection(connection);
   const rows = await getRelationRows(connection, tableName, columnName, value);
   return { rows };
 });
 
 ipcMain.handle('database:table', async (_event, { connection, tableName, filter, limit, columnFilter, sort }) => {
-  connection = hydrateConnection(connection);
   const [columns, data, outgoingKeys, incomingKeys] = await Promise.all([
     getColumns(connection, tableName),
     getData(connection, tableName, filter, limit, columnFilter, sort),
@@ -2001,7 +1878,6 @@ ipcMain.handle('database:table', async (_event, { connection, tableName, filter,
 });
 
 ipcMain.handle('database:update-rows', async (_event, { connection, tableName, updates }) => {
-  connection = hydrateConnection(connection);
   const results = [];
   for (const { setValues, whereValues } of updates) {
     try {
@@ -2019,7 +1895,6 @@ ipcMain.handle('database:update-rows', async (_event, { connection, tableName, u
 });
 
 ipcMain.handle('database:insert-rows', async (_event, { connection, tableName, rows }) => {
-  connection = hydrateConnection(connection);
   const results = [];
   for (const row of rows) {
     try {
@@ -2037,7 +1912,6 @@ ipcMain.handle('database:insert-rows', async (_event, { connection, tableName, r
 });
 
 ipcMain.handle('database:delete-rows', async (_event, { connection, tableName, rows }) => {
-  connection = hydrateConnection(connection);
   const results = [];
   for (const row of rows) {
     try {
@@ -2054,8 +1928,11 @@ ipcMain.handle('database:delete-rows', async (_event, { connection, tableName, r
   return results;
 });
 
+ipcMain.handle('database:truncate-table', async (_event, { connection, tableName }) => {
+  return truncateTable(connection, tableName);
+});
+
 ipcMain.handle('database:run-sql', async (_event, { connection, sql }) => {
-  connection = hydrateConnection(connection);
   const trimmed = String(sql || '').trim();
   if (!trimmed) throw new Error('Geen SQL opgegeven.');
 
@@ -2078,7 +1955,6 @@ ipcMain.handle('database:run-sql', async (_event, { connection, sql }) => {
 });
 
 ipcMain.handle('database:backup-table', async (_event, { connection, tableName }) => {
-  connection = hydrateConnection(connection);
   if (!tableName) {
     throw new Error('Geen tabel gekozen.');
   }

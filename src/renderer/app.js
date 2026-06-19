@@ -20,6 +20,7 @@ const state = {
   draggingConnectionId: null,
   focusGroupId: null,
   contextMenuConnectionId: null,
+  contextMenuTable: null,
   contextMenuRowIndex: null,
   sshSessionByTab: new Map(),
   sshOutputByTab: new Map(),
@@ -603,6 +604,19 @@ function getColumnFilterAt(index, filter = getActiveFilter()) {
   return normalized.columnFilters[index] || null;
 }
 
+function isRunnableColumnFilter(item) {
+  if (!item?.column) return false;
+  if (item.operator === 'BETWEEN') {
+    return Boolean(String(item.value || '').trim() && String(item.valueTo || '').trim());
+  }
+  return Boolean(String(item.value || '').trim());
+}
+
+function debounceLoadActiveTable() {
+  clearTimeout(state.filterTimer);
+  state.filterTimer = setTimeout(loadActiveTable, 220);
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -1159,6 +1173,9 @@ async function loadConnections() {
     state.connections = await window.sqlBase.listConnections();
     if (!state.activeConnectionId && state.connections.length) {
       state.activeConnectionId = state.connections[0].id;
+      if (state.connections[0].type !== 'ssh') {
+        await loadSchemaForActiveConnection();
+      }
     }
   } catch (error) {
     state.connections = [];
@@ -1759,6 +1776,35 @@ function closeTab(tabId) {
   renderTableView();
 }
 
+function closeAllTabs() {
+  for (const tab of state.tabs) {
+    clearTimeout(state.sortTimerByTab.get(tab.id));
+    const sshSessionId = state.sshSessionByTab.get(tab.id);
+    if (sshSessionId) {
+      window.sqlBase.stopSsh(sshSessionId);
+    }
+    disposeSshTerminal(tab.id);
+  }
+
+  state.tabs = [];
+  state.activeTabId = null;
+  state.tablePayloadByTab.clear();
+  state.tableLoadSeqByTab.clear();
+  state.sshSessionByTab.clear();
+  state.sshOutputByTab.clear();
+  state.selectedRowsByTab.clear();
+  state.anchorRowByTab.clear();
+  state.relationLookupByTab.clear();
+  state.pendingRowsByTab.clear();
+  state.editsByTab.clear();
+  state.filterByTab.clear();
+  state.sortByTab.clear();
+  state.sortTimerByTab.clear();
+
+  render();
+  renderTableView();
+}
+
 function getDateInputType(columnType) {
   if (!columnType) return null;
   const t = columnType.toLowerCase().replace(/\(.*\)/, '').trim();
@@ -1976,6 +2022,17 @@ elements.datePickerInput.addEventListener('keydown', (e) => {
 
 elements.datePickerBackdrop.addEventListener('click', () => datePickerState.onCancel?.());
 
+function isTruncatableTableType(type) {
+  const normalized = String(type || '').toLowerCase();
+  return normalized === 'table' || normalized === 'base table';
+}
+
+function getSidebarTableKindLabel(type) {
+  const normalized = String(type || '').toLowerCase();
+  if (isTruncatableTableType(normalized)) return '';
+  return normalized;
+}
+
 function renderConnections() {
   const connection = getActiveConnection();
 
@@ -2002,16 +2059,20 @@ function renderConnections() {
     const filterQ = elements.sidebarFilterInput.value.toLowerCase().trim();
     const visibleTables = filterQ ? tables.filter((t) => t.name.toLowerCase().includes(filterQ)) : tables;
     elements.connectionsList.innerHTML = visibleTables.length
-      ? visibleTables.map((table) => `
-          <button class="table-button ${activeTab?.connectionId === connection.id && activeTab?.tableName === table.name ? 'active' : ''}"
-                  data-table-name="${escapeHtml(table.name)}"
-                  data-table-connection-id="${escapeHtml(connection.id)}">
-            <span>
-              <span class="table-name">${escapeHtml(table.name)}</span>
-              <span class="table-kind">${escapeHtml(table.type)}</span>
-            </span>
-          </button>
-        `).join('')
+      ? visibleTables.map((table) => {
+          const kindLabel = getSidebarTableKindLabel(table.type);
+          return `
+            <button class="table-button ${activeTab?.connectionId === connection.id && activeTab?.tableName === table.name ? 'active' : ''}"
+                    data-table-name="${escapeHtml(table.name)}"
+                    data-table-type="${escapeHtml(table.type || '')}"
+                    data-table-connection-id="${escapeHtml(connection.id)}">
+              <span>
+                <span class="table-name">${escapeHtml(table.name)}</span>
+                ${kindLabel ? `<span class="table-kind">${escapeHtml(kindLabel)}</span>` : ''}
+              </span>
+            </button>
+          `;
+        }).join('')
       : `<p class="muted-note">${filterQ ? 'Geen resultaten.' : 'Geen tabellen gevonden.'}</p>`;
 
     elements.connectionsList.dataset.view = 'tables';
@@ -2127,7 +2188,8 @@ function renderConnections() {
 }
 
 function renderTabs() {
-  elements.tabsBar.innerHTML = state.tabs
+  const closeAllIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
+  elements.tabsBar.innerHTML = `${state.tabs
     .map(
       (tab) => {
         const connection = state.connections.find((item) => item.id === tab.connectionId);
@@ -2145,7 +2207,11 @@ function renderTabs() {
       `;
       }
     )
-    .join('');
+    .join('')}${
+      state.tabs.length
+        ? `<button class="tabs-close-all" type="button" data-close-all-tabs title="Sluit alle tabs" aria-label="Sluit alle tabs">${closeAllIcon}</button>`
+        : ''
+    }`;
 }
 
 function capturePendingInputValues() {
@@ -2678,8 +2744,13 @@ function render() {
 }
 
 function closeConnectionContextMenu() {
-  document.querySelector('.connection-context-menu:not(.row-context-menu)')?.remove();
+  document.querySelector('.connection-context-menu:not(.row-context-menu):not(.table-context-menu)')?.remove();
   state.contextMenuConnectionId = null;
+}
+
+function closeTableContextMenu() {
+  document.querySelector('.table-context-menu')?.remove();
+  state.contextMenuTable = null;
 }
 
 function closeRowContextMenu() {
@@ -2687,9 +2758,18 @@ function closeRowContextMenu() {
   state.contextMenuRowIndex = null;
 }
 
+function positionContextMenu(menu, event) {
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(event.clientX, window.innerWidth - rect.width - 8);
+  const top = Math.min(event.clientY, window.innerHeight - rect.height - 8);
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+}
+
 function openRowContextMenu(event, rowIndex) {
   event.preventDefault();
   closeConnectionContextMenu();
+  closeTableContextMenu();
   closeRowContextMenu();
 
   const tab = getActiveTab();
@@ -2716,17 +2796,39 @@ function openRowContextMenu(event, rowIndex) {
     </button>
   `;
   document.body.appendChild(menu);
+  positionContextMenu(menu, event);
+}
 
-  const rect = menu.getBoundingClientRect();
-  const left = Math.min(event.clientX, window.innerWidth - rect.width - 8);
-  const top = Math.min(event.clientY, window.innerHeight - rect.height - 8);
-  menu.style.left = `${Math.max(8, left)}px`;
-  menu.style.top = `${Math.max(8, top)}px`;
+function openTableContextMenu(event, connectionId, tableName, tableType) {
+  event.preventDefault();
+  closeConnectionContextMenu();
+  closeTableContextMenu();
+  closeRowContextMenu();
+
+  const connection = state.connections.find((item) => item.id === connectionId);
+  if (!connection || !tableName) return;
+
+  const canTruncate = !connection.readOnly && isTruncatableTableType(tableType);
+  state.contextMenuTable = { connectionId, tableName, tableType };
+
+  const menu = document.createElement('div');
+  menu.className = 'connection-context-menu table-context-menu';
+  menu.innerHTML = `
+    <button type="button" data-table-context-action="truncate" class="danger" ${canTruncate ? '' : 'disabled'}>
+      <span class="context-menu-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>
+      </span>
+      Truncate table
+    </button>
+  `;
+  document.body.appendChild(menu);
+  positionContextMenu(menu, event);
 }
 
 function openConnectionContextMenu(event, connectionId) {
   event.preventDefault();
   closeConnectionContextMenu();
+  closeTableContextMenu();
   closeRowContextMenu();
   state.contextMenuConnectionId = connectionId;
   const conn = state.connections.find((item) => item.id === connectionId);
@@ -2768,12 +2870,7 @@ function openConnectionContextMenu(event, connectionId) {
     </button>
   `;
   document.body.appendChild(menu);
-
-  const rect = menu.getBoundingClientRect();
-  const left = Math.min(event.clientX, window.innerWidth - rect.width - 8);
-  const top = Math.min(event.clientY, window.innerHeight - rect.height - 8);
-  menu.style.left = `${Math.max(8, left)}px`;
-  menu.style.top = `${Math.max(8, top)}px`;
+  positionContextMenu(menu, event);
 }
 
 function applyTheme(theme) {
@@ -2796,6 +2893,52 @@ async function backupActiveTable() {
     }
 
     showToast(`Tabelbackup klaar: ${result.filePath}`);
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function truncateSidebarTable(context) {
+  const { connectionId, tableName, tableType } = context || {};
+  const connection = state.connections.find((item) => item.id === connectionId);
+  if (!connection || !tableName) return;
+
+  if (connection.readOnly) {
+    showToast('Alleen lezen staat aan voor deze connectie.');
+    return;
+  }
+
+  if (!isTruncatableTableType(tableType)) {
+    showToast('Alleen echte tabellen kunnen worden geleegd.');
+    return;
+  }
+
+  if (!confirm(`Alle rijen uit "${tableName}" verwijderen? Dit kan niet ongedaan worden gemaakt.`)) {
+    return;
+  }
+
+  try {
+    await window.sqlBase.truncateTable({ connection, tableName });
+
+    for (const tab of state.tabs) {
+      if (tab.connectionId === connectionId && tab.tableName === tableName) {
+        state.tablePayloadByTab.delete(tab.id);
+        state.selectedRowsByTab.delete(tab.id);
+        state.anchorRowByTab.delete(tab.id);
+        state.relationLookupByTab.delete(tab.id);
+        state.pendingRowsByTab.delete(tab.id);
+        state.editsByTab.delete(tab.id);
+      }
+    }
+
+    const activeTab = getActiveTab();
+    if (activeTab?.connectionId === connectionId && activeTab?.tableName === tableName) {
+      await loadActiveTable();
+    } else {
+      renderTableView();
+    }
+
+    showToast(`Tabel "${tableName}" geleegd.`);
   } catch (error) {
     showToast(error.message);
   }
@@ -2915,10 +3058,12 @@ document.addEventListener('click', async (event) => {
   const menu = event.target.closest('.connection-context-menu');
   if (!menu) {
     closeConnectionContextMenu();
+    closeTableContextMenu();
     return;
   }
 
   const actionButton = event.target.closest('[data-context-action]');
+  const tableActionButton = event.target.closest('[data-table-context-action]');
   const colorButton = event.target.closest('[data-context-color]');
   if (colorButton && state.contextMenuConnectionId) {
     const connectionId = state.contextMenuConnectionId;
@@ -2950,6 +3095,12 @@ document.addEventListener('click', async (event) => {
     if (conn && !confirm(`Connectie "${conn.name}" verwijderen?`)) return;
     await removeConnection(connectionId);
   }
+
+  if (tableActionButton?.dataset.tableContextAction === 'truncate' && state.contextMenuTable) {
+    const context = state.contextMenuTable;
+    closeTableContextMenu();
+    await truncateSidebarTable(context);
+  }
 });
 
 document.addEventListener('click', async (event) => {
@@ -2970,12 +3121,14 @@ document.addEventListener('click', async (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     closeConnectionContextMenu();
+    closeTableContextMenu();
     closeRowContextMenu();
   }
 });
 
 window.addEventListener('resize', () => {
   closeConnectionContextMenu();
+  closeTableContextMenu();
   closeRowContextMenu();
   if (!elements.connectionForm.hidden && elements.connectionForm.style.transform === 'none') {
     const rect = elements.connectionForm.getBoundingClientRect();
@@ -2984,6 +3137,7 @@ window.addEventListener('resize', () => {
 });
 window.addEventListener('blur', () => {
   closeConnectionContextMenu();
+  closeTableContextMenu();
   closeRowContextMenu();
 });
 
@@ -3056,9 +3210,21 @@ elements.connectionsList.addEventListener('click', async (event) => {
 });
 
 elements.connectionsList.addEventListener('contextmenu', (event) => {
+  const tableButton = event.target.closest('[data-table-name]');
+  if (tableButton) {
+    openTableContextMenu(
+      event,
+      tableButton.dataset.tableConnectionId,
+      tableButton.dataset.tableName,
+      tableButton.dataset.tableType
+    );
+    return;
+  }
+
   const card = event.target.closest('[data-connection-card-id]');
   if (!card) {
     closeConnectionContextMenu();
+    closeTableContextMenu();
     return;
   }
 
@@ -3195,7 +3361,14 @@ elements.connectionsList.addEventListener('dragend', () => {
 
 elements.tabsBar.addEventListener('click', (event) => {
   const closeButton = event.target.closest('[data-close-tab-id]');
+  const closeAllButton = event.target.closest('[data-close-all-tabs]');
   const tabButton = event.target.closest('[data-tab-id]');
+
+  if (closeAllButton) {
+    event.stopPropagation();
+    closeAllTabs();
+    return;
+  }
 
   if (closeButton) {
     event.stopPropagation();
@@ -3229,8 +3402,7 @@ elements.structureModeButton.addEventListener('click', () => {
 
 elements.filterInput.addEventListener('input', () => {
   getActiveFilter().text = elements.filterInput.value;
-  clearTimeout(state.filterTimer);
-  state.filterTimer = setTimeout(loadActiveTable, 220);
+  debounceLoadActiveTable();
 });
 
 elements.filterModeToggle.addEventListener('click', () => {
@@ -3256,17 +3428,23 @@ elements.filterColumnRows.addEventListener('change', (event) => {
   const item = getColumnFilterAt(index);
   if (!item) return;
 
+  const wasRunnable = isRunnableColumnFilter(item);
+
   if (target.dataset.filterField === 'column') {
     item.column = target.value;
-    item.value = '';
-    item.valueTo = '';
     syncFilterControls();
-    loadActiveTable();
+    if (wasRunnable || isRunnableColumnFilter(item)) {
+      clearTimeout(state.filterTimer);
+      loadActiveTable();
+    }
   } else if (target.dataset.filterField === 'operator') {
     item.operator = target.value;
     item.valueTo = '';
     syncFilterControls();
-    if (item.value.trim()) loadActiveTable();
+    if (wasRunnable || isRunnableColumnFilter(item)) {
+      clearTimeout(state.filterTimer);
+      loadActiveTable();
+    }
   }
 });
 
@@ -3280,9 +3458,13 @@ elements.filterColumnRows.addEventListener('input', (event) => {
   const item = getColumnFilterAt(index);
   if (!item) return;
 
+  const wasRunnable = isRunnableColumnFilter(item);
   item[field] = target.value;
-  clearTimeout(state.filterTimer);
-  if (item.column) state.filterTimer = setTimeout(loadActiveTable, 220);
+  if (wasRunnable || isRunnableColumnFilter(item)) {
+    debounceLoadActiveTable();
+  } else {
+    clearTimeout(state.filterTimer);
+  }
 });
 
 elements.filterColumnRows.addEventListener('click', (event) => {
@@ -3305,9 +3487,10 @@ elements.filterColumnRows.addEventListener('click', (event) => {
 
   if (action === 'remove') {
     if (filter.columnFilters.length <= 1 || !Number.isInteger(index)) return;
+    const removedWasRunnable = isRunnableColumnFilter(filter.columnFilters[index]);
     filter.columnFilters.splice(index, 1);
     syncFilterControls();
-    loadActiveTable();
+    if (removedWasRunnable) loadActiveTable();
     return;
   }
 

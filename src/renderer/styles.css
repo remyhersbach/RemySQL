@@ -1056,6 +1056,9 @@ select:focus {
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .connection-color-swatch {
@@ -1110,6 +1113,15 @@ select:focus {
 
 .connection-context-menu > button:hover {
   background: var(--interactive-bg);
+}
+
+.connection-context-menu > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.connection-context-menu > button:disabled:hover {
+  background: transparent;
 }
 
 .connection-context-menu > button.danger {
@@ -1260,6 +1272,33 @@ select:focus {
   color: var(--text);
 }
 
+.tabs-close-all {
+  position: sticky;
+  right: 0;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+  background: var(--surface-alt);
+  color: var(--muted);
+  box-shadow: -8px 0 10px var(--surface-alt);
+}
+
+.tabs-close-all:hover {
+  background: var(--tab-close-hover);
+  color: var(--text);
+}
+
+.tabs-close-all svg {
+  width: 15px;
+  height: 15px;
+}
+
 .empty-state {
   display: grid;
   align-content: center;
@@ -1398,36 +1437,40 @@ select:focus {
 }
 
 .filter-column-row select {
-  flex: 1 1 150px;
-  min-width: 104px;
+  flex: 0 1 260px;
+  min-width: 120px;
+  max-width: 320px;
   width: auto;
 }
 
 .filter-column-row select[data-filter-field="operator"] {
-  flex: 0 1 122px;
+  flex: 0 0 122px;
   min-width: 104px;
+  max-width: none;
 }
 
 .filter-column-row input {
-  flex: 0 1 96px;
-  min-width: 70px;
+  flex: 1 1 160px;
+  min-width: 96px;
   width: auto;
   padding-left: 7px;
   padding-right: 7px;
 }
 
 .filter-column-row.is-between select {
-  flex-basis: 136px;
+  flex-basis: 220px;
+  max-width: 280px;
 }
 
 .filter-column-row.is-between select[data-filter-field="operator"] {
   flex-basis: 100px;
   min-width: 94px;
+  max-width: none;
 }
 
 .filter-column-row.is-between input {
-  flex-basis: 82px;
-  min-width: 62px;
+  flex-basis: 120px;
+  min-width: 74px;
 }
 
 .filter-chain-button {
@@ -1457,8 +1500,8 @@ select:focus {
 }
 
 .filter-date-btn {
-  flex: 0 1 104px;
-  min-width: 74px;
+  flex: 1 1 160px;
+  min-width: 96px;
   height: 34px;
   padding: 0 10px;
   border: 1px solid var(--border-strong);
@@ -1475,8 +1518,8 @@ select:focus {
 }
 
 .filter-column-row.is-between .filter-date-btn {
-  flex-basis: 86px;
-  min-width: 68px;
+  flex-basis: 120px;
+  min-width: 74px;
   padding-left: 8px;
   padding-right: 8px;
 }
@@ -2356,6 +2399,9 @@ th.sorted-desc .sort-arrow {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .error-dialog-actions {
@@ -2455,6 +2501,9 @@ th.sorted-desc .sort-arrow {
   font-size: 12px;
   color: var(--danger-text);
   background: var(--danger-soft);
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* ── Cell Viewer ─────────────────────────────────────────────────────────── */
