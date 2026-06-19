@@ -10,6 +10,7 @@ const packagePath = path.join(root, 'package.json');
 const lockPath = path.join(root, 'package-lock.json');
 const changelogPath = path.join(root, 'CHANGELOG.md');
 const releaseNotesPath = path.join(root, 'RELEASE_NOTES.md');
+const releaseManagedPaths = ['RELEASE_NOTES.md', 'CHANGELOG.md', 'package.json', 'package-lock.json'];
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const args = process.argv.slice(2);
 
@@ -162,8 +163,20 @@ function readReleaseNotes(version, tag) {
     .trim();
 }
 
+function stripEmptyBulletLines(markdown) {
+  return String(markdown || '')
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*[-*]\s*$/.test(line))
+    .join('\n')
+    .trim();
+}
+
+function readPublishReleaseNotes(version, tag) {
+  return stripEmptyBulletLines(readReleaseNotes(version, tag));
+}
+
 function getReleaseNotesChangelogBody(version, tag) {
-  const lines = readReleaseNotes(version, tag).split(/\r?\n/);
+  const lines = readPublishReleaseNotes(version, tag).split(/\r?\n/);
   while (lines.length && !lines[0].trim()) lines.shift();
   if (/^#\s+/.test(lines[0] || '')) lines.shift();
   while (lines.length && !lines[0].trim()) lines.shift();
@@ -210,7 +223,7 @@ function prepareChangelog(version, tag) {
     throw new Error(`CHANGELOG.md mist een sectie voor ${version}.`);
   }
   if (!getChangelogBulletCount(version)) {
-    throw new Error(`CHANGELOG.md heeft geen bullets voor ${version}.`);
+    console.log(`CHANGELOG.md heeft geen ingevulde bullets voor ${version}; de app toont voor deze versie geen changelog.`);
   }
 }
 
@@ -226,12 +239,12 @@ async function prepareReleaseNotes(version, tag) {
     await prompt('Druk op Enter om door te gaan.');
   }
 
-  if (!readReleaseNotes(version, tag)) {
+  if (!readPublishReleaseNotes(version, tag)) {
     throw new Error('RELEASE_NOTES.md is leeg.');
   }
 
   if (!getReleaseNotesBulletCount(version, tag)) {
-    throw new Error('RELEASE_NOTES.md heeft nog geen ingevulde bullets.');
+    console.log('RELEASE_NOTES.md heeft geen ingevulde bullets; deze release krijgt geen changelog in de app.');
   }
 }
 
@@ -322,7 +335,7 @@ async function getReleaseByTag(repo, tag) {
 }
 
 async function ensureGitHubRelease(repo, tag, version) {
-  const releaseBody = readReleaseNotes(version, tag);
+  const releaseBody = readPublishReleaseNotes(version, tag);
   const existing = await getReleaseByTag(repo, tag);
   if (existing) {
     return githubRequest(repo, `/releases/${existing.id}`, {
@@ -403,7 +416,7 @@ async function main() {
   const rawBump = args.find((arg) => !arg.startsWith('--'));
   const pkg = readJson(packagePath);
 
-  assertCleanWorktree(['RELEASE_NOTES.md']);
+  assertCleanWorktree(releaseManagedPaths);
 
   const bump = rawBump || await prompt(`Nieuwe versie vanaf ${pkg.version} (patch/minor/major/x.y.z) [patch] `, 'patch');
   const nextVersion = bumpVersion(pkg.version, bump);
