@@ -1195,6 +1195,10 @@ async function fetchSchemaForConnection(connection) {
     return null;
   }
 
+  if (connection.importNeedsReview) {
+    return null;
+  }
+
   const schema = await window.sqlBase.loadSchema(connection);
   state.schemaByConnection.set(connection.id, schema);
   return schema;
@@ -2119,7 +2123,7 @@ function renderConnections() {
               <span class="connection-name">${escapeHtml(conn.name)}</span>
               ${conn.readOnly ? '<span class="connection-read-only-badge" title="Alleen lezen" aria-label="Alleen lezen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="9" height="9" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>' : ''}
             </span>
-            <span class="connection-path">${escapeHtml(getConnectionSummary(conn))}</span>
+            <span class="connection-path">${conn.importNeedsReview ? 'Nog aanvullen · ' : ''}${escapeHtml(getConnectionSummary(conn))}</span>
           </span>
         </button>
       `;
@@ -3037,6 +3041,85 @@ elements.newConnectionButton.addEventListener('click', () => {
   openConnectionForm('mariadb');
 });
 
+const dbeaverDialog = document.querySelector('#dbeaverImportDialog');
+const dbeaverDirectory = document.querySelector('#dbeaverDirectoryInput');
+const dbeaverReport = document.querySelector('#dbeaverImportReport');
+const dbeaverSubmit = document.querySelector('#dbeaverImportSubmit');
+const dbeaverBrowse = document.querySelector('#dbeaverBrowseButton');
+const dbeaverClose = document.querySelector('#dbeaverCloseButton');
+let dbeaverImportBusy = false;
+
+async function openDBeaverImport() {
+  if (dbeaverDialog.open) return;
+  try {
+    if (!dbeaverDirectory.value) dbeaverDirectory.value = await window.sqlBase.getDBeaverDefaultPath();
+    closeConnectionForm();
+    dbeaverReport.hidden = true;
+    dbeaverReport.replaceChildren();
+    dbeaverDialog.showModal();
+    dbeaverDirectory.focus();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+document.querySelector('#importDBeaverButton').addEventListener('click', openDBeaverImport);
+window.sqlBase.onImportDBeaver(openDBeaverImport);
+dbeaverClose.addEventListener('click', () => dbeaverDialog.close());
+dbeaverDialog.addEventListener('cancel', (event) => {
+  if (dbeaverImportBusy) event.preventDefault();
+});
+dbeaverBrowse.addEventListener('click', async () => {
+  try {
+    const directory = await window.sqlBase.chooseDBeaverDirectory(dbeaverDirectory.value);
+    if (directory) dbeaverDirectory.value = directory;
+  } catch (error) {
+    dbeaverReport.hidden = false;
+    dbeaverReport.textContent = error.message;
+  }
+});
+document.querySelector('#dbeaverImportForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (dbeaverImportBusy) return;
+  dbeaverImportBusy = true;
+  for (const control of [dbeaverSubmit, dbeaverBrowse, dbeaverDirectory, dbeaverClose]) control.disabled = true;
+  dbeaverSubmit.textContent = 'Importeren…';
+  dbeaverReport.hidden = false;
+  dbeaverReport.textContent = 'Connecties worden ingelezen…';
+  try {
+    const result = await window.sqlBase.importDBeaverConnections(dbeaverDirectory.value);
+    state.connections = result.connections;
+    render();
+    const imported = result.results.filter((entry) => entry.status === 'imported').length;
+    const duplicates = result.results.filter((entry) => entry.status === 'duplicate').length;
+    const skipped = result.results.filter((entry) => entry.status === 'skipped').length;
+    dbeaverReport.replaceChildren();
+    const summary = document.createElement('p');
+    summary.textContent = `${imported} geïmporteerd · ${duplicates} bestonden al · ${skipped} overgeslagen.`;
+    dbeaverReport.appendChild(summary);
+    for (const warning of result.warnings) {
+      const note = document.createElement('p');
+      note.textContent = warning;
+      dbeaverReport.appendChild(note);
+    }
+    const list = document.createElement('ul');
+    for (const entry of result.results) {
+      const item = document.createElement('li');
+      const status = { imported: 'Geïmporteerd', duplicate: 'Bestond al', skipped: 'Overgeslagen' }[entry.status];
+      item.textContent = `${entry.name}: ${status}. ${entry.reason || (entry.warnings || []).join(' ')}`;
+      list.appendChild(item);
+    }
+    dbeaverReport.appendChild(list);
+  } catch (error) {
+    dbeaverReport.textContent = error.message;
+  } finally {
+    dbeaverImportBusy = false;
+    for (const control of [dbeaverSubmit, dbeaverBrowse, dbeaverDirectory, dbeaverClose]) control.disabled = false;
+    dbeaverSubmit.textContent = 'Importeren';
+    dbeaverClose.focus();
+  }
+});
+
 elements.cancelConnectionButton.addEventListener('click', () => {
   closeConnectionForm();
 });
@@ -3196,6 +3279,11 @@ elements.connectionsList.addEventListener('click', async (event) => {
   if (connectionButton) {
     const connection = state.connections.find((item) => item.id === connectionButton.dataset.connectionId);
     if (!connection) return;
+    if (connection.importNeedsReview) {
+      openConnectionForm(connection.type, connection);
+      showConnectionFormError('Vul de ontbrekende instellingen aan en sla de connectie op.');
+      return;
+    }
     state.activeConnectionId = connection.id;
     if (connection.type === 'ssh') {
       await openSshConnection(connection);

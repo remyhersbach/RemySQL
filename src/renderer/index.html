@@ -15,6 +15,9 @@
             <img class="app-logo" src="../../assets/logo.png" height="60" alt="" aria-hidden="true" />
           </div>
           <div class="header-actions">
+            <button id="importDBeaverButton" class="icon-button" title="Importeer uit DBeaver" aria-label="Importeer connecties uit DBeaver">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg>
+            </button>
             <button id="themeToggleButton" class="icon-button" title="Wissel thema" aria-label="Wissel thema">
               <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
@@ -140,6 +143,22 @@
     </div>
 
     <div id="connectionFormBackdrop" class="connection-form-backdrop" hidden></div>
+    <dialog id="dbeaverImportDialog" class="dbeaver-import-dialog" aria-labelledby="dbeaverImportTitle">
+      <form id="dbeaverImportForm">
+        <h2 id="dbeaverImportTitle" class="connection-form-title">Importeer uit DBeaver</h2>
+        <p class="muted-note">Importeer MySQL, MariaDB en SQLite, inclusief opgeslagen inloggegevens en SSH-tunnels. Bestaande connecties worden overgeslagen. Er wordt tijdens de import geen databaseverbinding gemaakt.</p>
+        <label for="dbeaverDirectoryInput">Pad naar de .dbeaver-map</label>
+        <div class="dbeaver-path-row">
+          <input id="dbeaverDirectoryInput" type="text" required spellcheck="false" autocomplete="off" />
+          <button id="dbeaverBrowseButton" type="button" class="ghost-button">Bladeren…</button>
+        </div>
+        <div id="dbeaverImportReport" class="dbeaver-import-report" aria-live="polite" hidden></div>
+        <div class="dbeaver-import-actions">
+          <button id="dbeaverCloseButton" type="button" class="ghost-button">Sluiten</button>
+          <button id="dbeaverImportSubmit" type="submit" class="primary-button">Importeren</button>
+        </div>
+      </form>
+    </dialog>
     <section class="connection-form" id="connectionForm" role="dialog" aria-modal="true" aria-labelledby="connectionFormTitle" hidden>
       <div class="connection-form-header">
         <div>

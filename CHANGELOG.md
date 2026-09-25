@@ -4,6 +4,13 @@ Alle noemenswaardige wijzigingen in RemySQL staan in dit bestand.
 
 Gebruik per release een kop zoals `## 0.2.4 - 2026-05-31`. Het release-script vult de inhoud vanuit `RELEASE_NOTES.md`.
 
+## Nog niet uitgebracht
+
+- DBeaver-connecties importeren via het menu of de sidebar, met een instelbaar pad, opgeslagen inloggegevens, SSH-tunnels en een resultaat per connectie.
+- Herhaald importeren slaat bestaande connecties over. Connecties met ontbrekende gegevens kunnen na import worden aangevuld.
+- Electron bijgewerkt naar 44.4.5, electron-builder naar 26.15.3 en de MariaDB-driver naar 3.5.4; indirecte dependencies bijgewerkt.
+- Het ontwikkelscript installeert de Electron-runtime vóór het aanpassen van de appnaam, passend bij de nieuwe installatieprocedure.
+
 ## 0.2.14 - 2026-06-19
 
 ### Wijzigingen

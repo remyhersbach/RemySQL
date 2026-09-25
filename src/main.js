@@ -4,6 +4,7 @@ const { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSyn
 const net = require('node:net');
 const path = require('node:path');
 const { createCipheriv, createDecipheriv, randomBytes, randomUUID } = require('node:crypto');
+const { defaultDBeaverPath, resolveDBeaverPath, readDBeaverConnections, mergeDBeaverConnections } = require('./dbeaver-import');
 app.name = 'RemySQL';
 
 let mariadb;
@@ -763,6 +764,9 @@ function normalizeDbRows(rows) {
 }
 
 async function openMariaDbClient(connection) {
+  if (connection.importNeedsReview) {
+    throw new Error('Vul eerst de ontbrekende instellingen van de geïmporteerde connectie aan.');
+  }
   if (!mariadb) mariadb = await import('mariadb');
   const tunnel = await startDatabaseSshTunnel(connection);
   let client;
@@ -1388,7 +1392,7 @@ async function truncateTable(connection, tableName) {
   return { ok: true };
 }
 
-function normalizeConnection(connection) {
+function normalizeConnection(connection, { allowIncomplete = false } = {}) {
   const type = ['sqlite', 'ssh'].includes(connection.type) ? connection.type : 'mariadb';
   const backgroundColor = isHexColor(connection.backgroundColor) ? connection.backgroundColor : null;
   const groupId = connection.groupId ? String(connection.groupId) : null;
@@ -1509,12 +1513,12 @@ function normalizeConnection(connection) {
     normalized.groupPosition = groupPosition;
   }
 
-  if (!normalized.user || !normalized.database) {
+  if (!allowIncomplete && (!normalized.user || !normalized.database)) {
     throw new Error('MariaDB user en database zijn verplicht.');
   }
 
   if (sshTunnel) {
-    if (!sshTunnel.host || !sshTunnel.user) {
+    if (!allowIncomplete && (!sshTunnel.host || !sshTunnel.user)) {
       throw new Error('SSH-tunnel host en user zijn verplicht.');
     }
     normalized.sshTunnel = sshTunnel;
@@ -1522,6 +1526,10 @@ function normalizeConnection(connection) {
 
   if (connection.readOnly) {
     normalized.readOnly = true;
+  }
+
+  if (allowIncomplete && connection.importNeedsReview) {
+    normalized.importNeedsReview = true;
   }
 
   return normalized;
@@ -1637,6 +1645,11 @@ function createMenu() {
         },
         { type: 'separator' },
         {
+          label: 'Importeer connecties uit DBeaver...',
+          click: () => mainWindow?.webContents.send('connection:import-dbeaver')
+        },
+        { type: 'separator' },
+        {
           label: 'Herlaad venster',
           accelerator: 'CmdOrCtrl+R',
           click: () => mainWindow?.reload()
@@ -1658,6 +1671,24 @@ function createMenu() {
 }
 
 ipcMain.handle('connections:list', () => readConnections());
+
+ipcMain.handle('dbeaver:default-path', () => defaultDBeaverPath());
+
+ipcMain.handle('dbeaver:choose-directory', async (_event, directory) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Kies de DBeaver .dbeaver-map',
+    defaultPath: resolveDBeaverPath(directory),
+    properties: ['openDirectory', 'showHiddenFiles']
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle('dbeaver:import', (_event, directory) => {
+  const imported = readDBeaverConnections(directory);
+  const result = mergeDBeaverConnections(imported, readConnections(), normalizeConnection, sameConnection);
+  if (result.results.some((entry) => entry.status === 'imported')) writeConnections(result.connections);
+  return { ...result, connections: normalizeConnectionPositions(result.connections) };
+});
 
 ipcMain.handle('app:info', () => ({
   name: app.name,

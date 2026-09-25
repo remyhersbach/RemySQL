@@ -7,6 +7,7 @@ Een eerste basis voor een DBeaver/SQL Ace-achtige desktop database-manager in El
 - MariaDB connecties aanmaken via het app-menu of de knop in de sidebar.
 - SQLite connecties blijven beschikbaar als lokale testoptie.
 - Connecties persistent bewaren in Electron user data.
+- MySQL-, MariaDB- en SQLite-connecties uit DBeaver importeren, inclusief opgeslagen inloggegevens en SSH-tunnels.
 - Tabellen bekijken en openen in tabs.
 - Per tab schakelen tussen `Data` en `Structuur`.
 - Data filteren met een globale zoekfilter.
@@ -35,6 +36,22 @@ Voor de lokale SQLite demo:
 2. Kies `sample/demo.sqlite`
 3. Open een tabel links.
 
+## DBeaver-connecties importeren
+
+Kies `Connecties` → `Importeer connecties uit DBeaver...` of klik op het importicoon naast de plusknop. Je kunt het pad typen of een map kiezen. De standaardmap is `/Users/${USER}/Library/DBeaverData/workspace6/General/.dbeaver/` (de thuismap van de huidige gebruiker).
+
+De import leest `data-sources.json` en, indien aanwezig, `credentials-config.json`. De projectmetadata en projectinstellingen zijn niet nodig. MySQL en MariaDB worden als MariaDB-connecties opgeslagen; lokale SQLite-bestanden blijven SQLite-connecties. Gewone SSH-tunnels met wachtwoord, sleutelbestand of SSH-agent worden meegenomen, evenals mappen en alleen-lezen-instellingen. Inloggegevens worden in de bestaande versleutelde RemySQL-opslag bewaard.
+
+Tijdens de import wordt geen databaseverbinding gemaakt. Bestaande connecties worden overgeslagen, ook bij opnieuw importeren. Connecties met ontbrekende instellingen krijgen `Nog aanvullen`; klik erop om het bewerkformulier te openen. Het resultaat vermeldt per connectie wat is geïmporteerd of overgeslagen. Andere databases, SSL/proxyhandlers, aangepaste JDBC-opties, SSH-jumpservers en opgeslagen sleutelpassphrases worden nog niet ondersteund. Credentials uit een master-password-/externe credential store moet je zelf aanvullen.
+
+## Tests
+
+```bash
+npm test
+```
+
+De importtests gebruiken tijdelijke fixtures en controleren ook de IPC-opslag, versleuteling en dubbele imports. Ze gebruiken geen echte databaseverbindingen of je eigen connectieopslag.
+
 ## Release maken
 
 Gebruik het release-script vanaf een schone git worktree. `RELEASE_NOTES.md` mag al handmatig aangepast zijn; dat bestand wordt meegenomen in de release-commit.
@@ -55,4 +72,4 @@ npm run release:publish
 
 ## Eerste scope
 
-Deze versie gebruikt de officiële MariaDB Node-driver voor MariaDB en de lokale `sqlite3` command line tool voor de demo. Wachtwoorden worden in deze eerste iteratie lokaal in Electron user data opgeslagen; dat is prima voor een prototype, maar de volgende stap is opslag via Keychain/credential store.
+Deze versie gebruikt de officiële MariaDB Node-driver voor MariaDB en de lokale `sqlite3` command line tool voor de demo. Connecties worden versleuteld met AES-256-GCM; de datasleutel wordt beschermd via Electron safeStorage (op macOS de Keychain).

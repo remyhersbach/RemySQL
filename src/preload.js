@@ -5,6 +5,14 @@ contextBridge.exposeInMainWorld('sqlBase', {
   checkForUpdates: () => ipcRenderer.invoke('app:check-updates'),
   openExternal: (url) => ipcRenderer.invoke('app:open-external', url),
   listConnections: () => ipcRenderer.invoke('connections:list'),
+  getDBeaverDefaultPath: () => ipcRenderer.invoke('dbeaver:default-path'),
+  chooseDBeaverDirectory: (directory) => ipcRenderer.invoke('dbeaver:choose-directory', directory),
+  importDBeaverConnections: (directory) => ipcRenderer.invoke('dbeaver:import', directory),
+  onImportDBeaver: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('connection:import-dbeaver', listener);
+    return () => ipcRenderer.removeListener('connection:import-dbeaver', listener);
+  },
   addConnection: (connection) => ipcRenderer.invoke('connections:add', connection),
   removeConnection: (connectionId) => ipcRenderer.invoke('connections:remove', connectionId),
   duplicateConnection: (connectionId) => ipcRenderer.invoke('connections:duplicate', connectionId),

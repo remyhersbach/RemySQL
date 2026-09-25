@@ -7,6 +7,10 @@
 //  - Makes node-pty's macOS spawn-helper executable (required for PTY sessions)
 // Runs automatically via "postinstall" in package.json.
 
+// Electron 44 downloads its runtime on first require rather than postinstall.
+// Install it before patching the bundle (also prepares npm start on other OSes).
+require('electron');
+
 if (process.platform !== 'darwin') process.exit(0);
 
 const path = require('node:path');
