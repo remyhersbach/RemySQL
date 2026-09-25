@@ -9,8 +9,14 @@ Een eerste basis voor een DBeaver/SQL Ace-achtige desktop database-manager in El
 - Connecties persistent bewaren in Electron user data.
 - MySQL-, MariaDB- en SQLite-connecties uit DBeaver importeren, inclusief opgeslagen inloggegevens en SSH-tunnels.
 - Tabellen bekijken en openen in tabs.
+- Actieve connectie, database en tabel als breadcrumb, met een omgevingsbadge. Stel Productie, Test of Ontwikkeling in via Connectie bewerken; automatisch herkennen uit naam/groep en Geen label zijn ook beschikbaar.
+- Verbindingsstatus: grijs voor niet verbonden, groen voor actief en rood bij een verbindingsfout.
+- Verstelbare zijbalk met onthouden breedte. Sleep de rechterrand, gebruik de pijltjestoetsen op de scheiding of dubbelklik om de standaardbreedte te herstellen.
+- Subtiele zebra-strepen in beide thema’s, een melding wanneer de rijlimiet is bereikt en een teller voor gewijzigde cellen en nieuwe rijen naast Opslaan.
 - Per tab schakelen tussen `Data` en `Structuur`.
-- Data filteren met een globale zoekfilter.
+- Tabellen openen standaard op primary key aflopend (ook bij samengestelde sleutels). Via de kolomkoppen kun je de sortering aanpassen.
+- Data standaard filteren met `kolom = waarde`; de knop `Tekst` schakelt naar vrije tekst en `Kolom` schakelt terug. Filters worden automatisch toegepast; meerdere regels combineren met `EN`. Ingevulde filters zijn gekleurd en kunnen met `Wis filters` worden gewist.
+- Kolommen op naam filteren met tweemaal kort `Cmd` (`Ctrl` op Windows/Linux) of het oogje naast Data/Structuur. Bij verborgen kolommen toont het oogje het zichtbare aantal, bijvoorbeeld `4/12`. Typ bijvoorbeeld `public` om alleen bijpassende kolommen zoals `publication_id` te tonen. Werkt in Data en Structuur, onthoudt de zoekterm per tab en toont met `Esc` in het zoekveld of het kruisje weer alle kolommen.
 - Foreign key-relaties direct zien in een rechter sidebar.
 - Sample database generator om meteen iets te testen.
 

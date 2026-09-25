@@ -200,3 +200,31 @@ test('SSH key and agent modes are preserved; jump hosts and passphrases are repo
   assert.match(entries[2].reason, /jumpserver/);
   assert.match(entries[3].reason, /passphrase/);
 });
+
+test('connection environment survives save, reload and explicit override', async (t) => {
+  const main = mainHarness(t);
+  const initial = await main.invoke('connections:add', {
+    type: 'ssh', name: 'Productie', host: 'example.test', user: 'demo', environment: 'production'
+  });
+  assert.equal(main.invoke('connections:list')[0].environment, 'production');
+  await main.invoke('connections:add', { ...initial.connection, environment: 'none' });
+  assert.equal(main.invoke('connections:list')[0].environment, 'none');
+  await main.invoke('connections:add', { ...initial.connection, environment: 'auto' });
+  assert.equal(main.invoke('connections:list')[0].environment, 'auto');
+});
+
+test('environment metadata supports all connection types and older connections', (t) => {
+  const main = mainHarness(t);
+  const sqlitePath = path.join(path.dirname(main.storage), 'demo.sqlite');
+  fs.writeFileSync(sqlitePath, '');
+  for (const connection of [
+    { type: 'sqlite', path: sqlitePath },
+    { type: 'ssh', host: 'example.test', user: 'demo' },
+    { type: 'mariadb', user: 'demo', database: 'shop' }
+  ]) {
+    assert.equal(main.normalize(connection).environment, 'auto');
+    assert.equal(main.normalize({ ...connection, environment: 'test' }).environment, 'test');
+    assert.equal(main.normalize({ ...connection, environment: 'development' }).environment, 'development');
+    assert.equal(main.normalize({ ...connection, environment: 'unexpected' }).environment, 'auto');
+  }
+});

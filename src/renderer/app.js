@@ -1,5 +1,6 @@
 const state = {
   connections: [],
+  connectionErrors: new Map(),
   activeConnectionId: null,
   schemaByConnection: new Map(),
   tabs: [],
@@ -12,6 +13,7 @@ const state = {
   pendingRowsByTab: new Map(),
   editsByTab: new Map(),
   filterByTab: new Map(),
+  columnSearchByTab: new Map(),
   sidebarView: 'connections',
   editingConnectionId: null,
   mode: 'data',
@@ -61,6 +63,7 @@ const elements = {
   connectionFormError: document.querySelector('#connectionFormError'),
   connectionTypeSelect: document.querySelector('#connectionTypeSelect'),
   connectionNameInput: document.querySelector('#connectionNameInput'),
+  connectionEnvironmentSelect: document.querySelector('#connectionEnvironmentSelect'),
   mariaFields: document.querySelector('#mariaFields'),
   mariaConnectionModeSelect: document.querySelector('#mariaConnectionModeSelect'),
   mariaHostInput: document.querySelector('#mariaHostInput'),
@@ -86,26 +89,36 @@ const elements = {
   cancelConnectionButton: document.querySelector('#cancelConnectionButton'),
   connectionFormTitle: document.querySelector('#connectionFormTitle'),
   sidebarNav: document.querySelector('#sidebarNav'),
+  sidebarResizeHandle: document.querySelector('#sidebarResizeHandle'),
   connectionsList: document.querySelector('#connectionsList'),
   activeConnectionLabel: document.querySelector('#activeConnectionLabel'),
+  environmentBadge: document.querySelector('#environmentBadge'),
   workspaceTitle: document.querySelector('#workspaceTitle'),
   backupButton: document.querySelector('#backupButton'),
   refreshButton: document.querySelector('#refreshButton'),
   tabsBar: document.querySelector('#tabsBar'),
   emptyState: document.querySelector('#emptyState'),
   tableView: document.querySelector('#tableView'),
+  tableControls: document.querySelector('#tableControls'),
   sshView: document.querySelector('#sshView'),
   sshTerminalPane: document.querySelector('#sshTerminalPane'),
   dataModeButton: document.querySelector('#dataModeButton'),
   structureModeButton: document.querySelector('#structureModeButton'),
   filterInput: document.querySelector('#filterInput'),
   filterArea: document.querySelector('#filterArea'),
+  filterStatus: document.querySelector('#filterStatus'),
+  clearFiltersButton: document.querySelector('#clearFiltersButton'),
   filterTextMode: document.querySelector('#filterTextMode'),
   filterColumnMode: document.querySelector('#filterColumnMode'),
   filterColumnRows: document.querySelector('#filterColumnRows'),
   filterModeToggle: document.querySelector('#filterModeToggle'),
   limitInput: document.querySelector('#limitInput'),
   tableMeta: document.querySelector('#tableMeta'),
+  columnSearchButton: document.querySelector('#columnSearchButton'),
+  columnVisibilityCount: document.querySelector('#columnVisibilityCount'),
+  columnSearch: document.querySelector('#columnSearch'),
+  columnSearchInput: document.querySelector('#columnSearchInput'),
+  columnSearchClose: document.querySelector('#columnSearchClose'),
   dataPanel: document.querySelector('.data-panel'),
   tableLoader: document.querySelector('#tableLoader'),
   tableLoaderLabel: document.querySelector('#tableLoaderLabel'),
@@ -116,6 +129,7 @@ const elements = {
   tableActions: document.querySelector('#tableActions'),
   addRowButton: document.querySelector('#addRowButton'),
   pendingActions: document.querySelector('#pendingActions'),
+  pendingSummary: document.querySelector('#pendingSummary'),
   saveRowsButton: document.querySelector('#saveRowsButton'),
   discardRowsButton: document.querySelector('#discardRowsButton'),
   datePickerBackdrop: document.querySelector('#datePickerBackdrop'),
@@ -549,7 +563,7 @@ function createDefaultColumnFilterState() {
 
 function createDefaultFilterState() {
   return {
-    mode: 'text',
+    mode: 'column',
     text: '',
     columnFilters: [createDefaultColumnFilterState()]
   };
@@ -853,7 +867,7 @@ function applyCellEditValue(tab, payload, rowIndex, columnName, value, sourceInp
     edits.set(`${targetRowIndex}:${columnName}`, { value, error: null });
   }
   state.editsByTab.set(tab.id, edits);
-  elements.pendingActions.hidden = false;
+  syncPendingSummary();
 
   if (targetRows.length > 1) {
     showToast(`${targetRows.length} rijen aangepast in ${columnName}`);
@@ -985,7 +999,7 @@ function isConnectionActive(connection) {
   }
 
   return state.schemaByConnection.has(connection.id)
-    || state.tabs.some((tab) => tab.connectionId === connection.id);
+    || state.tabs.some((tab) => tab.connectionId === connection.id && state.tablePayloadByTab.has(tab.id));
 }
 
 function getConnectionTypeIcon(type) {
@@ -1041,6 +1055,7 @@ function openConnectionForm(type = 'mariadb', preset = {}) {
   resetConnectionFormPosition();
   setConnectionFormType(type);
   elements.connectionNameInput.value = preset.name || '';
+  elements.connectionEnvironmentSelect.value = preset.environment || 'auto';
   elements.connectionPathInput.value = preset.path || '';
   elements.mariaConnectionModeSelect.value = preset.sshTunnel ? 'ssh' : 'direct';
   elements.mariaHostInput.value = preset.host || '127.0.0.1';
@@ -1077,6 +1092,7 @@ function resetConnectionForm() {
   state.editingConnectionId = null;
   clearConnectionFormError();
   elements.connectionNameInput.value = '';
+  elements.connectionEnvironmentSelect.value = 'auto';
   elements.connectionPathInput.value = '';
   elements.mariaConnectionModeSelect.value = 'direct';
   elements.mariaHostInput.value = '127.0.0.1';
@@ -1120,6 +1136,7 @@ function getConnectionFromForm() {
       path: elements.connectionPathInput.value,
       ...(elements.connectionReadOnlyCheckbox.checked ? { readOnly: true } : {}),
       ...(existingBackgroundColor ? { backgroundColor: existingBackgroundColor } : {}),
+      environment: elements.connectionEnvironmentSelect.value,
       ...existingPosition,
       ...existingGroup
     };
@@ -1136,6 +1153,7 @@ function getConnectionFromForm() {
       password: elements.sshPasswordInput.value,
       keyPath: elements.sshKeyPathInput.value,
       ...(existingBackgroundColor ? { backgroundColor: existingBackgroundColor } : {}),
+      environment: elements.connectionEnvironmentSelect.value,
       ...existingPosition,
       ...existingGroup
     };
@@ -1154,6 +1172,7 @@ function getConnectionFromForm() {
   return {
     ...(id ? { id } : {}),
     type: 'mariadb',
+    environment: elements.connectionEnvironmentSelect.value,
     name: elements.connectionNameInput.value || elements.mariaDatabaseInput.value,
     host: elements.mariaHostInput.value || '127.0.0.1',
     port: elements.mariaPortInput.value || '3306',
@@ -1199,9 +1218,15 @@ async function fetchSchemaForConnection(connection) {
     return null;
   }
 
-  const schema = await window.sqlBase.loadSchema(connection);
-  state.schemaByConnection.set(connection.id, schema);
-  return schema;
+  try {
+    const schema = await window.sqlBase.loadSchema(connection);
+    state.schemaByConnection.set(connection.id, schema);
+    state.connectionErrors.delete(connection.id);
+    return schema;
+  } catch (error) {
+    state.connectionErrors.set(connection.id, error.message);
+    throw error;
+  }
 }
 
 async function loadSchemaForActiveConnection() {
@@ -1223,6 +1248,7 @@ async function saveConnection(connection) {
       ...state.connections.filter((item) => item.id !== result.connection.id && !sameConnection(item, result.connection))
     ];
     state.activeConnectionId = result.connection.id;
+    state.connectionErrors.delete(result.connection.id);
     if (result.connection.type !== 'ssh') {
       state.schemaByConnection.set(result.connection.id, { tables: result.tables });
     }
@@ -1251,6 +1277,7 @@ async function removeConnection(connectionId) {
   }
   state.connections = await window.sqlBase.removeConnection(connectionId);
   state.schemaByConnection.delete(connectionId);
+  state.connectionErrors.delete(connectionId);
   state.tabs = state.tabs.filter((tab) => tab.connectionId !== connectionId);
   for (const tabId of [...state.selectedRowsByTab.keys()]) {
     if (!state.tabs.some((tab) => tab.id === tabId)) {
@@ -1285,6 +1312,7 @@ async function duplicateConnection(connectionId) {
       ...state.connections.filter((item) => item.id !== result.connection.id)
     ];
     state.activeConnectionId = result.connection.id;
+    state.connectionErrors.delete(result.connection.id);
     if (result.connection.type !== 'ssh') {
       state.schemaByConnection.set(result.connection.id, { tables: result.tables });
     }
@@ -1320,6 +1348,7 @@ async function disconnectConnection(connectionId) {
 
   state.tabs = state.tabs.filter((tab) => tab.connectionId !== connectionId);
   state.schemaByConnection.delete(connectionId);
+  state.connectionErrors.delete(connectionId);
 
   if (state.activeConnectionId === connectionId) {
     state.activeConnectionId = null;
@@ -1389,9 +1418,13 @@ async function openSshConnection(connection) {
         const { cols, rows } = getSshTerminalSize(existing.id);
         const { sessionId } = await window.sqlBase.startSsh({ connection, cols, rows });
         state.sshSessionByTab.set(existing.id, sessionId);
+        state.connectionErrors.delete(connection.id);
+        renderConnections();
         fitSshTerminal(existing.id);
         renderSshView();
       } catch (error) {
+        state.connectionErrors.set(connection.id, error.message);
+        renderConnections();
         state.sshOutputByTab.set(existing.id, `${state.sshOutputByTab.get(existing.id) || ''}${error.message}\n`);
         renderSshView();
       }
@@ -1419,9 +1452,13 @@ async function openSshConnection(connection) {
     const { cols, rows } = getSshTerminalSize(tab.id);
     const { sessionId } = await window.sqlBase.startSsh({ connection, cols, rows });
     state.sshSessionByTab.set(tab.id, sessionId);
+    state.connectionErrors.delete(connection.id);
+    renderConnections();
     fitSshTerminal(tab.id);
     renderSshView();
   } catch (error) {
+    state.connectionErrors.set(connection.id, error.message);
+    renderConnections();
     state.sshOutputByTab.set(tab.id, `${state.sshOutputByTab.get(tab.id) || ''}${error.message}\n`);
     renderSshView();
   }
@@ -1600,7 +1637,9 @@ function renderSshView() {
   elements.refreshButton.disabled = true;
   elements.backupButton.disabled = true;
   elements.workspaceTitle.textContent = tab.tableName;
-  elements.activeConnectionLabel.textContent = connection ? `SSH · ${getConnectionSummary(connection)}` : 'SSH';
+  syncConnectionContext(connection, tab);
+  elements.sqlButton.disabled = true;
+  elements.readOnlyBadge.hidden = true;
   ensureSshTerminal(tab);
 }
 
@@ -1646,7 +1685,7 @@ async function loadActiveTable() {
 
   try {
     const filter = getFilterForTab(tab.id);
-    const sort = state.sortByTab.get(tab.id) || null;
+    const sort = state.sortByTab.get(tab.id);
     const columnFilter = getActiveColumnFilter();
     const payload = await window.sqlBase.loadTable({
       connection,
@@ -1672,8 +1711,11 @@ async function loadActiveTable() {
       }
       payload.rows = result.rows || [];
       payload.query = query;
+      payload.appliedLimit = Math.max(1, Math.min(5000, Number(elements.limitInput.value) || 100));
     }
+    state.connectionErrors.delete(connection.id);
     state.tablePayloadByTab.set(tab.id, payload);
+    renderConnections();
     state.relationLookupByTab.delete(tab.id);
     state.pendingRowsByTab.delete(tab.id);
     state.editsByTab.delete(tab.id);
@@ -1711,6 +1753,7 @@ async function loadSortedActiveTable() {
   }
 
   const filter = getFilterForTab(tab.id);
+  const appliedLimit = Math.max(1, Math.min(5000, Number(elements.limitInput.value) || 100));
   const query = buildTableSelectQuery(connection, tab.tableName, payload.columns, {
     filter: filter.mode === 'text' ? filter.text : '',
     limit: elements.limitInput.value,
@@ -1732,6 +1775,7 @@ async function loadSortedActiveTable() {
       ...payload,
       rows: result.rows || [],
       query,
+      appliedLimit,
       isSqlResult: false
     });
     state.relationLookupByTab.delete(tab.id);
@@ -1755,6 +1799,7 @@ function closeTab(tabId) {
   const index = state.tabs.findIndex((tab) => tab.id === tabId);
   clearTimeout(state.sortTimerByTab.get(tabId));
   state.sortTimerByTab.delete(tabId);
+  state.sortByTab.delete(tabId);
   const sshSessionId = state.sshSessionByTab.get(tabId);
   if (sshSessionId) {
     window.sqlBase.stopSsh(sshSessionId);
@@ -1771,6 +1816,7 @@ function closeTab(tabId) {
   state.pendingRowsByTab.delete(tabId);
   state.editsByTab.delete(tabId);
   state.filterByTab.delete(tabId);
+  state.columnSearchByTab.delete(tabId);
 
   if (state.activeTabId === tabId) {
     state.activeTabId = state.tabs[Math.max(0, index - 1)]?.id || state.tabs[0]?.id || null;
@@ -1802,6 +1848,7 @@ function closeAllTabs() {
   state.pendingRowsByTab.clear();
   state.editsByTab.clear();
   state.filterByTab.clear();
+  state.columnSearchByTab.clear();
   state.sortByTab.clear();
   state.sortTimerByTab.clear();
 
@@ -1991,13 +2038,14 @@ function renderColumnFilterRows() {
         : '';
 
       return `
+        ${index > 0 ? '<div class="filter-conjunction">EN</div>' : ''}
         <div class="filter-column-row ${isBetween ? 'is-between' : ''}" data-filter-index="${index}">
-          <select data-filter-field="column">${getFilterColumnOptionsHtml(item.column)}</select>
-          <select data-filter-field="operator">${getFilterOperatorOptionsHtml(item.operator)}</select>
-          <input data-filter-field="value" type="text" placeholder="Waarde..." value="${escapeHtml(item.value)}"${isDate ? ' hidden' : ''} />
+          <select data-filter-field="column" aria-label="Filterkolom">${getFilterColumnOptionsHtml(item.column)}</select>
+          <select data-filter-field="operator" aria-label="Vergelijking">${getFilterOperatorOptionsHtml(item.operator)}</select>
+          <input data-filter-field="value" aria-label="Filterwaarde" type="text" placeholder="Waarde..." value="${escapeHtml(item.value)}"${isDate ? ' hidden' : ''} />
           <button data-filter-action="date-from" class="filter-date-btn" type="button"${isDate ? '' : ' hidden'}>${escapeHtml(valueButtonText)}</button>
           <span class="filter-between-sep"${isBetween ? '' : ' hidden'}>en</span>
-          <input data-filter-field="valueTo" type="text" placeholder="Tot..." value="${escapeHtml(item.valueTo)}"${isBetween && !isDate ? '' : ' hidden'} />
+          <input data-filter-field="valueTo" aria-label="Eindwaarde" type="text" placeholder="Tot..." value="${escapeHtml(item.valueTo)}"${isBetween && !isDate ? '' : ' hidden'} />
           <button data-filter-action="date-to" class="filter-date-btn" type="button"${isBetween && isDate ? '' : ' hidden'}>${escapeHtml(valueToButtonText)}</button>
           ${addButton}
           ${removeButton}
@@ -2007,13 +2055,39 @@ function renderColumnFilterRows() {
     .join('');
 }
 
+// Update styling without rebuilding inputs, preserving focus while typing.
+function syncFilterAppearance() {
+  const filter = getActiveFilter();
+  const hasText = Boolean(filter.text.trim());
+  elements.filterInput.classList.toggle('has-value', hasText);
+  elements.filterColumnRows.querySelectorAll('.filter-column-row').forEach((row, index) => {
+    const item = filter.columnFilters[index];
+    const hasValue = Boolean(item && (String(item.value).trim()
+      || (item.operator === 'BETWEEN' && String(item.valueTo).trim())));
+    row.classList.toggle('has-value', hasValue);
+  });
+  const activeCount = filter.mode === 'text'
+    ? Number(hasText)
+    : filter.columnFilters.filter(isRunnableColumnFilter).length;
+  elements.filterStatus.textContent = activeCount ? `${activeCount} actief` : '';
+  elements.clearFiltersButton.hidden = filter.mode === 'text'
+    ? !filter.text
+    : !filter.columnFilters.some((item) => item.column || item.value || item.valueTo);
+}
+
 function syncFilterControls() {
   const filter = getActiveFilter();
   elements.filterInput.value = filter.text;
   elements.filterTextMode.hidden = filter.mode === 'column';
   elements.filterColumnMode.hidden = filter.mode !== 'column';
-  elements.filterModeToggle.classList.toggle('active', filter.mode === 'column');
+  const isText = filter.mode === 'text';
+  elements.filterModeToggle.classList.toggle('active', isText);
+  elements.filterModeToggle.title = isText ? 'Wissel naar kolom = waarde' : 'Wissel naar vrije tekst';
+  elements.filterModeToggle.setAttribute('aria-label', elements.filterModeToggle.title);
+  elements.filterModeToggle.setAttribute('aria-pressed', String(isText));
+  elements.filterModeToggle.textContent = isText ? 'Kolom' : 'Tekst';
   renderColumnFilterRows();
+  syncFilterAppearance();
 }
 
 elements.datePickerConfirm.addEventListener('click', () => datePickerState.onCommit?.());
@@ -2052,6 +2126,7 @@ function renderConnections() {
         <div class="active-connection-text">
           <span class="connection-name">${escapeHtml(connection.name)}</span>
           <span class="connection-path">${escapeHtml(getConnectionSummary(connection))}</span>
+          ${state.connectionErrors.has(connection.id) ? `<span class="connection-error" role="status" title="${escapeHtml(state.connectionErrors.get(connection.id))}">Verbinding mislukt</span>` : ''}
         </div>
         <button class="edit-connection-button icon-button" data-edit-connection-id="${escapeHtml(connection.id)}" title="Bewerk connectie" aria-label="Bewerk connectie">${pencilIcon}</button>
       </div>
@@ -2097,6 +2172,8 @@ function renderConnections() {
       const isTerminal = conn.type === 'ssh';
       const typeLabel = isTerminal ? 'Terminal' : 'Database';
       const isActive = isConnectionActive(conn);
+      const connectionError = state.connectionErrors.get(conn.id);
+      const statusLabel = connectionError ? `Verbindingsfout: ${connectionError}` : isActive ? 'Verbonden · klik om te verbreken' : 'Niet verbonden';
       const typeIcon = getConnectionTypeIcon(conn.type);
       const item = document.createElement('article');
       item.className = 'connection-item';
@@ -2109,10 +2186,10 @@ function renderConnections() {
       item.innerHTML = `
         <button
           type="button"
-          class="connection-status-dot ${isActive ? 'active' : 'inactive'}"
+          class="connection-status-dot ${connectionError ? 'error' : isActive ? 'active' : 'inactive'}"
           ${isActive ? `data-disconnect-connection-id="${escapeHtml(conn.id)}"` : 'disabled'}
-          title="${isActive ? 'Disconnect' : 'Niet actief'}"
-          aria-label="${isActive ? `Disconnect ${escapeHtml(conn.name)}` : `${escapeHtml(conn.name)} is niet actief`}"
+          title="${escapeHtml(statusLabel)}"
+          aria-label="${escapeHtml(conn.name)}: ${escapeHtml(statusLabel)}"
         ></button>
         <button class="connection-button" data-connection-id="${escapeHtml(conn.id)}">
           <span class="connection-type-icon ${isTerminal ? 'ssh' : 'database'}" title="${typeLabel}" aria-label="${typeLabel}">
@@ -2296,13 +2373,52 @@ function appendPendingRows(tab, columns, payload) {
   }
 }
 
+function getVisibleColumns(payload) {
+  const query = (state.columnSearchByTab.get(state.activeTabId)?.query || '').trim().toLowerCase();
+  return (payload.columns || []).filter((column) => column.name.toLowerCase().includes(query));
+}
+
+function syncColumnSearch() {
+  const search = state.columnSearchByTab.get(state.activeTabId);
+  elements.columnSearch.hidden = !search;
+  elements.columnSearchInput.value = search?.query || '';
+  elements.columnSearchButton.setAttribute('aria-expanded', String(Boolean(search)));
+  const payload = state.tablePayloadByTab.get(state.activeTabId);
+  elements.columnSearchButton.disabled = !payload;
+  const total = payload?.columns?.length || 0;
+  const visible = payload ? getVisibleColumns(payload).length : 0;
+  const narrowed = visible < total;
+  elements.columnVisibilityCount.hidden = !narrowed;
+  elements.columnVisibilityCount.textContent = narrowed ? `${visible}/${total}` : '';
+  elements.columnSearchButton.setAttribute('aria-label', narrowed
+    ? `Kolommen zoeken: ${visible} van ${total} zichtbaar`
+    : 'Kolommen zoeken');
+}
+
+function openColumnSearch() {
+  const tab = getActiveTab();
+  if (!tab || tab.type === 'ssh' || !state.tablePayloadByTab.has(tab.id) || isBlockingDialogOpen()) return;
+  if (!state.columnSearchByTab.has(tab.id)) state.columnSearchByTab.set(tab.id, { query: '' });
+  syncColumnSearch();
+  elements.columnSearchInput.focus();
+  elements.columnSearchInput.select();
+}
+
+function closeColumnSearch() {
+  state.columnSearchByTab.delete(state.activeTabId);
+  renderTableView();
+  elements.columnSearchButton.focus();
+}
+
 function renderDataTable(payload) {
   const tab = getActiveTab();
-  const columns = payload.columns || [];
+  const columns = getVisibleColumns(payload);
   const rows = payload.rows || [];
   const selectedRows = state.selectedRowsByTab.get(tab?.id) || new Set();
   const edits = state.editsByTab.get(tab?.id) || new Map();
-  const sort = payload.isSqlResult ? null : state.sortByTab.get(tab?.id);
+  const sorts = payload.isSqlResult ? [] : state.sortByTab.has(tab?.id)
+    ? [state.sortByTab.get(tab.id)].filter(Boolean)
+    : payload.sorts || [];
 
   const renderCellViewButton = (rowIndex, columnName) => `
     <button
@@ -2331,7 +2447,7 @@ function renderDataTable(payload) {
       const content = edit.value === '' ? '<span class="muted-note">NULL</span>' : escapeHtml(edit.value);
       const titleText = edit.error ? edit.error : edit.value;
       return `
-        <td class="data-cell ${cellClass}" title="${escapeHtml(titleText)}">
+        <td data-column-name="${escapeHtml(column.name)}" class="data-cell ${cellClass}" title="${escapeHtml(titleText)}">
           <span class="cell-content">${content}</span>
           ${renderCellViewButton(rowIndex, column.name)}
         </td>
@@ -2343,7 +2459,7 @@ function renderDataTable(payload) {
 
     if (!relationMatch) {
       return `
-        <td class="data-cell" title="${escapeHtml(formatPlainValue(rawValue))}">
+        <td data-column-name="${escapeHtml(column.name)}" class="data-cell" title="${escapeHtml(formatPlainValue(rawValue))}">
           <span class="cell-content">${content}</span>
           ${renderCellViewButton(rowIndex, column.name)}
         </td>
@@ -2351,7 +2467,7 @@ function renderDataTable(payload) {
     }
 
     return `
-      <td class="data-cell relation-cell" title="Klik om ${escapeHtml(relationMatch.relation.toTable)} te openen voor ${escapeHtml(formatPlainValue(rawValue))}; dubbelklik om te bewerken">
+      <td data-column-name="${escapeHtml(column.name)}" class="data-cell relation-cell" title="Klik om ${escapeHtml(relationMatch.relation.toTable)} te openen voor ${escapeHtml(formatPlainValue(rawValue))}; dubbelklik om te bewerken">
         <span class="cell-content">
           <button
             type="button"
@@ -2368,11 +2484,20 @@ function renderDataTable(payload) {
     `;
   };
 
-  elements.tableMeta.textContent = `${rows.length} rijen geladen, ${columns.length} kolommen`;
+  const columnCount = columns.length === (payload.columns || []).length
+    ? `${columns.length} kolommen`
+    : `${columns.length} van ${payload.columns.length} kolommen`;
+  const reachedLimit = !payload.isSqlResult && payload.appliedLimit && rows.length >= payload.appliedLimit;
+  elements.tableMeta.textContent = `${rows.length} rijen geladen · ${columnCount}${reachedLimit ? ' · limiet bereikt' : ''}`;
+  elements.tableMeta.title = reachedLimit ? 'Er kunnen meer rijen zijn. Verhoog de limiet of verfijn de filters.' : '';
+  if (!columns.length) {
+    elements.dataTable.innerHTML = '<tbody><tr><td class="muted-note">Geen kolommen gevonden.</td></tr></tbody>';
+    return;
+  }
   elements.dataTable.innerHTML = `
     <thead>
       <tr>${columns.map((column) => {
-        const dir = sort?.column === column.name ? sort.direction : null;
+        const dir = sorts.find((sort) => sort.column === column.name)?.direction;
         const arrow = dir === 'asc' ? '▲' : dir === 'desc' ? '▼' : '⇅';
         return payload.isSqlResult
           ? `<th>${escapeHtml(column.name)}</th>`
@@ -2429,8 +2554,9 @@ function renderRelationRows(rows) {
 }
 
 function renderStructureTable(payload) {
-  const columns = payload.columns || [];
-  elements.tableMeta.textContent = `${columns.length} kolommen in structuur`;
+  const columns = getVisibleColumns(payload);
+  elements.tableMeta.title = '';
+  elements.tableMeta.textContent = `${columns.length} van ${(payload.columns || []).length} kolommen in structuur`;
   elements.dataTable.innerHTML = `
     <thead>
       <tr>
@@ -2454,7 +2580,7 @@ function renderStructureTable(payload) {
             </tr>
           `
         )
-        .join('')}
+        .join('') || '<tr><td colspan="5" class="muted-note">Geen kolommen gevonden.</td></tr>'}
     </tbody>
   `;
 }
@@ -2521,8 +2647,54 @@ function renderRelations(payload) {
   }
 }
 
+function syncPendingSummary() {
+  const tab = getActiveTab();
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  const edits = state.editsByTab.get(tab?.id)?.size || 0;
+  const added = state.pendingRowsByTab.get(tab?.id)?.length || 0;
+  const hasChanges = edits + added > 0;
+  const parts = [];
+  if (edits) parts.push(`${edits} gewijzigde ${edits === 1 ? 'cel' : 'cellen'}`);
+  if (added) parts.push(`${added} nieuwe ${added === 1 ? 'rij' : 'rijen'}`);
+  elements.pendingSummary.textContent = parts.join(' · ') || 'Geen wijzigingen';
+  elements.pendingSummary.classList.toggle('has-changes', hasChanges);
+  elements.pendingSummary.hidden = !payload || Boolean(payload.isSqlResult);
+  elements.pendingActions.hidden = !hasChanges || state.mode !== 'data' || Boolean(payload?.isSqlResult);
+}
+
+function getConnectionEnvironment(connection) {
+  if (!connection) return '';
+  if (connection.environment && connection.environment !== 'auto') {
+    return ['production', 'test', 'development'].includes(connection.environment) ? connection.environment : '';
+  }
+  const name = `${connection.name || ''} ${connection.groupName || ''}`;
+  if (/(^|[\s_-])(prod|productie|production)(?=$|[\s_-])/i.test(name)) return 'production';
+  if (/(^|[\s_-])(test|staging|acceptatie)(?=$|[\s_-])/i.test(name)) return 'test';
+  if (/(^|[\s_-])(dev|development|ontwikkeling|local|lokaal)(?=$|[\s_-])/i.test(name)) return 'development';
+  return '';
+}
+
+function syncConnectionContext(connection, tab) {
+  const database = connection?.type === 'sqlite'
+    ? String(connection.path || '').split(/[\\/]/).pop()
+    : connection?.type === 'ssh' ? connection.host : connection?.database;
+  const parts = [connection?.name, database, tab?.type === 'database' ? tab.tableName : null].filter(Boolean);
+  elements.activeConnectionLabel.innerHTML = parts.length
+    ? parts.map((part, index) => `${index ? '<span class="breadcrumb-separator" aria-hidden="true">›</span>' : ''}<span${index === parts.length - 1 ? ' class="breadcrumb-current"' : ''}>${escapeHtml(part)}</span>`).join('')
+    : 'Geen connectie';
+  elements.activeConnectionLabel.title = parts.join(' › ');
+  const environment = getConnectionEnvironment(connection);
+  elements.environmentBadge.hidden = !environment;
+  elements.environmentBadge.dataset.environment = environment;
+  elements.environmentBadge.textContent = {production: 'Productie', test: 'Test', development: 'Ontwikkeling'}[environment] || '';
+  elements.environmentBadge.title = connection?.environment && connection.environment !== 'auto'
+    ? 'Omgeving ingesteld bij deze connectie'
+    : 'Omgeving herkend uit naam of groep. Aanpasbaar via Connectie bewerken.';
+}
+
 function renderTableView() {
   capturePendingInputValues();
+  syncColumnSearch();
 
   const tab = getActiveTab();
   if (tab?.type === 'ssh') {
@@ -2535,9 +2707,6 @@ function renderTableView() {
     ? state.connections.find((connection) => connection.id === tab.connectionId)
     : getActiveConnection();
   const isReadOnly = Boolean(activeConnection?.readOnly);
-  const pendingRows = state.pendingRowsByTab.get(tab?.id) || [];
-  const edits = state.editsByTab.get(tab?.id);
-  const hasPending = pendingRows.length > 0 || (edits && edits.size > 0);
   const isDataMode = state.mode === 'data';
   const isSqlResult = Boolean(payload?.isSqlResult);
 
@@ -2550,22 +2719,24 @@ function renderTableView() {
   elements.tableActions.hidden = !tab || !payload;
   elements.addRowButton.disabled = !isDataMode || isReadOnly || isSqlResult;
   elements.sqlButton.disabled = !tab || !payload || isReadOnly;
-  elements.pendingActions.hidden = !hasPending || !isDataMode || isSqlResult;
+  syncPendingSummary();
   elements.readOnlyBadge.hidden = !isReadOnly || !tab;
   elements.filterArea.hidden = !isDataMode;
+  elements.tableControls.hidden = !isDataMode || isSqlResult;
+  syncConnectionContext(activeConnection, tab);
 
   if (!tab) {
     setTableLoading(false);
     elements.workspaceTitle.textContent = activeConnection ? 'Kies een tabel' : 'Open of maak een connectie';
-    elements.activeConnectionLabel.textContent = activeConnection?.name || 'Geen connectie';
     elements.dataTable.innerHTML = '';
     elements.relationsList.innerHTML = '';
     return;
   }
 
   elements.workspaceTitle.textContent = tab.tableName;
-  elements.activeConnectionLabel.textContent = tab.connectionName;
   elements.dataModeButton.classList.toggle('active', isDataMode);
+  elements.dataModeButton.setAttribute('aria-selected', String(isDataMode));
+  elements.structureModeButton.setAttribute('aria-selected', String(!isDataMode));
   elements.structureModeButton.classList.toggle('active', state.mode === 'structure');
   elements.filterInput.disabled = !isDataMode;
 
@@ -3290,7 +3461,7 @@ elements.connectionsList.addEventListener('click', async (event) => {
       return;
     }
     state.sidebarView = 'tables';
-    if (!state.schemaByConnection.has(state.activeConnectionId)) {
+    if (!state.schemaByConnection.has(state.activeConnectionId) || state.connectionErrors.has(connection.id)) {
       await loadSchemaForActiveConnection();
     }
     render();
@@ -3490,21 +3661,36 @@ elements.structureModeButton.addEventListener('click', () => {
 
 elements.filterInput.addEventListener('input', () => {
   getActiveFilter().text = elements.filterInput.value;
+  syncFilterAppearance();
   debounceLoadActiveTable();
+});
+
+elements.clearFiltersButton.addEventListener('click', () => {
+  const filter = getActiveFilter();
+  if (filter.mode === 'text') {
+    filter.text = '';
+  } else {
+    filter.columnFilters = [createDefaultColumnFilterState()];
+  }
+  clearTimeout(state.filterTimer);
+  syncFilterControls();
+  if (filter.mode === 'text') elements.filterInput.focus();
+  else elements.filterColumnRows.querySelector('select')?.focus();
+  loadActiveTable();
 });
 
 elements.filterModeToggle.addEventListener('click', () => {
   const filter = getActiveFilter();
   const toColumn = filter.mode === 'text';
   filter.mode = toColumn ? 'column' : 'text';
-  if (!toColumn) {
-    filter.columnFilters = [createDefaultColumnFilterState()];
-    syncFilterControls();
-    loadActiveTable();
-  } else {
-    syncFilterControls();
+  clearTimeout(state.filterTimer);
+  syncFilterControls();
+  if (toColumn) {
     elements.filterColumnRows.querySelector('select[data-filter-field="column"]')?.focus();
+  } else {
+    elements.filterInput.focus();
   }
+  loadActiveTable();
 });
 
 elements.filterColumnRows.addEventListener('change', (event) => {
@@ -3548,6 +3734,7 @@ elements.filterColumnRows.addEventListener('input', (event) => {
 
   const wasRunnable = isRunnableColumnFilter(item);
   item[field] = target.value;
+  syncFilterAppearance();
   if (wasRunnable || isRunnableColumnFilter(item)) {
     debounceLoadActiveTable();
   } else {
@@ -3838,10 +4025,12 @@ elements.dataTable.addEventListener('click', async (event) => {
   const sortHeader = event.target.closest('th[data-sort-col]');
   if (sortHeader) {
     const col = sortHeader.dataset.sortCol;
-    const cur = state.sortByTab.get(tab.id);
+    const cur = state.sortByTab.has(tab.id)
+      ? state.sortByTab.get(tab.id)
+      : state.tablePayloadByTab.get(tab.id)?.sorts?.find((sort) => sort.column === col);
     if (cur?.column === col) {
       if (cur.direction === 'asc') state.sortByTab.set(tab.id, { column: col, direction: 'desc' });
-      else state.sortByTab.delete(tab.id);
+      else state.sortByTab.set(tab.id, null);
     } else {
       state.sortByTab.set(tab.id, { column: col, direction: 'asc' });
     }
@@ -3942,8 +4131,7 @@ elements.dataTable.addEventListener('dblclick', (event) => {
   if (activeConnection?.readOnly) return;
 
   const rowIndex = Number(row.dataset.rowIndex);
-  const colIndex = [...row.children].indexOf(td);
-  const column = payload.columns[colIndex];
+  const column = payload.columns.find((item) => item.name === td.dataset.columnName);
   if (!column) return;
 
   const targetRows = getCellEditTargetRows(tab, payload, rowIndex);
@@ -4040,6 +4228,8 @@ window.sqlBase.onSshExit(({ sessionId, code }) => {
   if (!tab) return;
 
   state.sshSessionByTab.delete(tab.id);
+  if (code) state.connectionErrors.set(tab.connectionId, `SSH afgesloten met foutcode ${code}`);
+  renderConnections();
   const statusText = code
     ? `[SSH niet gelukt, exit-code ${code}]`
     : '[SSH sessie afgesloten]';
@@ -4180,6 +4370,66 @@ elements.releaseDialog.addEventListener('keydown', (e) => {
   }
 });
 
+elements.columnSearchButton.addEventListener('click', openColumnSearch);
+elements.columnSearchClose.addEventListener('click', closeColumnSearch);
+elements.columnSearchInput.addEventListener('input', () => {
+  const search = state.columnSearchByTab.get(state.activeTabId);
+  if (!search) return;
+  search.query = elements.columnSearchInput.value;
+  renderTableView();
+  elements.dataTable.closest('.table-scroll').scrollLeft = 0;
+});
+elements.columnSearchInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    closeColumnSearch();
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    elements.columnSearchButton.focus();
+  }
+});
+
+// Only two short, standalone modifier taps count. Cmd+C, held keys and
+// switching windows must never open the column search accidentally.
+const columnSearchModifier = /Mac/i.test(navigator.platform) ? 'Meta' : 'Control';
+elements.columnSearchButton.title = `Kolommen zoeken (2× ${columnSearchModifier === 'Meta' ? 'Cmd' : 'Ctrl'})`;
+let columnSearchKeyDown = null;
+let columnSearchLastTap = null;
+function resetColumnSearchShortcut() {
+  columnSearchKeyDown = null;
+  columnSearchLastTap = null;
+}
+document.addEventListener('keydown', (event) => {
+  if (event.key !== columnSearchModifier || event.repeat || event.shiftKey || event.altKey
+      || (columnSearchModifier === 'Meta' ? event.ctrlKey : event.metaKey)) {
+    resetColumnSearchShortcut();
+    return;
+  }
+  if (columnSearchKeyDown !== null) {
+    resetColumnSearchShortcut();
+    return;
+  }
+  columnSearchKeyDown = event.timeStamp;
+}, true);
+document.addEventListener('keyup', (event) => {
+  if (event.key !== columnSearchModifier || columnSearchKeyDown === null) return;
+  const isShortTap = event.timeStamp - columnSearchKeyDown <= 400;
+  columnSearchKeyDown = null;
+  if (!isShortTap) {
+    resetColumnSearchShortcut();
+    return;
+  }
+  if (columnSearchLastTap !== null && event.timeStamp - columnSearchLastTap <= 500) {
+    resetColumnSearchShortcut();
+    openColumnSearch();
+  } else {
+    columnSearchLastTap = event.timeStamp;
+  }
+}, true);
+window.addEventListener('blur', resetColumnSearchShortcut);
+document.addEventListener('pointerdown', resetColumnSearchShortcut, true);
+
 let lastFocusArea = 'workspace';
 
 document.querySelector('.connections-panel').addEventListener('mousedown', () => {
@@ -4233,11 +4483,78 @@ document.addEventListener('keydown', (e) => {
       elements.sidebarFilterInput.select();
     } else if (!elements.tableView.hidden && state.mode === 'data') {
       e.preventDefault();
-      elements.filterInput.focus();
-      elements.filterInput.select();
+      if (getActiveFilter().mode === 'column') {
+        elements.filterColumnRows.querySelector('select[data-filter-field="column"]')?.focus();
+      } else {
+        elements.filterInput.focus();
+        elements.filterInput.select();
+      }
     }
   }
 }, true);
+
+let preferredSidebarWidth = null;
+try {
+  const saved = Number(localStorage.getItem('sqlbase.sidebarWidth'));
+  if (Number.isFinite(saved) && saved >= 260 && saved <= 480) preferredSidebarWidth = saved;
+} catch {}
+
+function applySidebarWidth() {
+  const max = Math.max(260, Math.min(480, window.innerWidth - 640));
+  const preferred = preferredSidebarWidth ?? (window.innerWidth <= 1120 ? 300 : 330);
+  const width = Math.min(max, Math.max(260, preferred));
+  document.documentElement.style.setProperty('--sidebar-width', `${width}px`);
+  elements.sidebarResizeHandle.setAttribute('aria-valuemax', String(max));
+  elements.sidebarResizeHandle.setAttribute('aria-valuenow', String(Math.round(width)));
+  elements.sidebarResizeHandle.setAttribute('aria-valuetext', `${Math.round(width)} pixels`);
+}
+function saveSidebarWidth() {
+  try {
+    if (preferredSidebarWidth === null) localStorage.removeItem('sqlbase.sidebarWidth');
+    else localStorage.setItem('sqlbase.sidebarWidth', String(preferredSidebarWidth));
+  } catch {}
+}
+let sidebarDrag = null;
+elements.sidebarResizeHandle.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  sidebarDrag = { x: event.clientX, width: Number(elements.sidebarResizeHandle.getAttribute('aria-valuenow')) };
+  elements.sidebarResizeHandle.setPointerCapture(event.pointerId);
+  document.body.classList.add('is-resizing-sidebar');
+});
+elements.sidebarResizeHandle.addEventListener('pointermove', (event) => {
+  if (!sidebarDrag) return;
+  const max = Number(elements.sidebarResizeHandle.getAttribute('aria-valuemax'));
+  preferredSidebarWidth = Math.max(260, Math.min(max, sidebarDrag.width + event.clientX - sidebarDrag.x));
+  applySidebarWidth();
+});
+function finishSidebarResize() {
+  if (!sidebarDrag) return;
+  sidebarDrag = null;
+  document.body.classList.remove('is-resizing-sidebar');
+  saveSidebarWidth();
+}
+elements.sidebarResizeHandle.addEventListener('lostpointercapture', finishSidebarResize);
+elements.sidebarResizeHandle.addEventListener('pointerup', finishSidebarResize);
+elements.sidebarResizeHandle.addEventListener('pointercancel', finishSidebarResize);
+window.addEventListener('blur', finishSidebarResize);
+elements.sidebarResizeHandle.addEventListener('dblclick', () => {
+  preferredSidebarWidth = null;
+  applySidebarWidth();
+  saveSidebarWidth();
+});
+elements.sidebarResizeHandle.addEventListener('keydown', (event) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const max = Number(elements.sidebarResizeHandle.getAttribute('aria-valuemax'));
+  const current = Number(elements.sidebarResizeHandle.getAttribute('aria-valuenow'));
+  preferredSidebarWidth = event.key === 'Home' ? 260 : event.key === 'End' ? max
+    : Math.max(260, Math.min(max, current + (event.key === 'ArrowRight' ? 10 : -10)));
+  applySidebarWidth();
+  saveSidebarWidth();
+});
+window.addEventListener('resize', applySidebarWidth);
+applySidebarWidth();
 
 setConnectionFormType('mariadb');
 loadConnections().finally(() => {

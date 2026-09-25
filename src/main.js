@@ -993,6 +993,17 @@ function normalizeSort(sort, columns) {
   return { column: column.name, direction };
 }
 
+function getTableSorts(sort, columns) {
+  // Undefined means the default; null explicitly disables sorting for this tab.
+  if (sort === undefined) {
+    return columns.filter((column) => Number(column.pk) > 0)
+      .sort((left, right) => Number(left.pk) - Number(right.pk))
+      .map((column) => ({ column: column.name, direction: 'desc' }));
+  }
+  const normalized = normalizeSort(sort, columns);
+  return normalized ? [normalized] : [];
+}
+
 function interpolateSql(sql, values) {
   let index = 0;
   return sql.replace(/\?/g, () => (
@@ -1042,13 +1053,13 @@ async function getSqliteData(databasePath, tableName, filter, limit, columnFilte
   appendSqliteColumnFilterClauses(clauses, columns, columnFilter);
 
   const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
-  const normalizedSort = normalizeSort(sort, columns);
-  const order = normalizedSort
-    ? ` ORDER BY ${quoteSqliteIdentifier(normalizedSort.column)} ${normalizedSort.direction.toUpperCase()}`
+  const sorts = getTableSorts(sort, columns);
+  const order = sorts.length
+    ? ` ORDER BY ${sorts.map((item) => `${quoteSqliteIdentifier(item.column)} ${item.direction.toUpperCase()}`).join(', ')}`
     : '';
   const query = `SELECT * FROM ${quoteSqliteIdentifier(tableName)}${where}${order} LIMIT ${safeLimit};`;
   const rows = await runSqlite(databasePath, query);
-  return { rows, query };
+  return { rows, query, sorts };
 }
 
 async function getMariaTables(connection) {
@@ -1065,17 +1076,20 @@ async function getMariaColumns(connection, tableName) {
   return runMariaDb(
     connection,
     `SELECT
-       ORDINAL_POSITION - 1 AS cid,
-       COLUMN_NAME AS name,
-       COLUMN_TYPE AS type,
-       IF(IS_NULLABLE = 'NO', 1, 0) AS notnull,
-       COLUMN_DEFAULT AS dflt_value,
-       IF(COLUMN_KEY = 'PRI', 1, 0) AS pk,
-       EXTRA AS extra
-     FROM information_schema.COLUMNS
-     WHERE TABLE_SCHEMA = DATABASE()
-       AND TABLE_NAME = ?
-     ORDER BY ORDINAL_POSITION;`,
+       c.ORDINAL_POSITION - 1 AS cid,
+       c.COLUMN_NAME AS name,
+       c.COLUMN_TYPE AS type,
+       IF(c.IS_NULLABLE = 'NO', 1, 0) AS notnull,
+       c.COLUMN_DEFAULT AS dflt_value,
+       COALESCE(k.ORDINAL_POSITION, 0) AS pk,
+       c.EXTRA AS extra
+     FROM information_schema.COLUMNS c
+     LEFT JOIN information_schema.KEY_COLUMN_USAGE k
+       ON k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME
+       AND k.COLUMN_NAME = c.COLUMN_NAME AND k.CONSTRAINT_NAME = 'PRIMARY'
+     WHERE c.TABLE_SCHEMA = DATABASE()
+       AND c.TABLE_NAME = ?
+     ORDER BY c.ORDINAL_POSITION;`,
     [tableName]
   );
 }
@@ -1163,13 +1177,13 @@ async function getMariaData(connection, tableName, filter, limit, columnFilter, 
   appendMariaColumnFilterClauses(clauses, values, columns, columnFilter);
 
   const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
-  const normalizedSort = normalizeSort(sort, columns);
-  const order = normalizedSort
-    ? ` ORDER BY ${quoteMariaIdentifier(normalizedSort.column)} ${normalizedSort.direction.toUpperCase()}`
+  const sorts = getTableSorts(sort, columns);
+  const order = sorts.length
+    ? ` ORDER BY ${sorts.map((item) => `${quoteMariaIdentifier(item.column)} ${item.direction.toUpperCase()}`).join(', ')}`
     : '';
   const query = `SELECT * FROM ${quoteMariaIdentifier(tableName)}${where}${order} LIMIT ${safeLimit};`;
   const rows = await runMariaDb(connection, query, values);
-  return { rows, query: interpolateSql(query, values) };
+  return { rows, query: interpolateSql(query, values), sorts };
 }
 
 function getConnectionLabel(connection) {
@@ -1395,6 +1409,7 @@ async function truncateTable(connection, tableName) {
 function normalizeConnection(connection, { allowIncomplete = false } = {}) {
   const type = ['sqlite', 'ssh'].includes(connection.type) ? connection.type : 'mariadb';
   const backgroundColor = isHexColor(connection.backgroundColor) ? connection.backgroundColor : null;
+  const environment = ['production', 'test', 'development', 'none'].includes(connection.environment) ? connection.environment : 'auto';
   const groupId = connection.groupId ? String(connection.groupId) : null;
   const groupName = groupId ? String(connection.groupName || 'Groep') : null;
   const position = Number.isFinite(Number(connection.position)) ? Number(connection.position) : null;
@@ -1413,6 +1428,7 @@ function normalizeConnection(connection, { allowIncomplete = false } = {}) {
     const normalized = {
       id: connection.id || randomUUID(),
       type,
+      environment,
       name: String(connection.name || path.basename(connection.path || 'SQLite database')),
       path: String(connection.path || ''),
       createdAt: connection.createdAt || new Date().toISOString()
@@ -1450,6 +1466,7 @@ function normalizeConnection(connection, { allowIncomplete = false } = {}) {
     const normalized = {
       id: connection.id || randomUUID(),
       type,
+      environment,
       name: String(connection.name || connection.host || 'SSH connectie'),
       host: String(connection.host || ''),
       port: clamp(connection.port || 22, 1, 65535),
@@ -1486,6 +1503,7 @@ function normalizeConnection(connection, { allowIncomplete = false } = {}) {
   const normalized = {
     id: connection.id || randomUUID(),
     type,
+    environment,
     name: String(connection.name || connection.database || 'MariaDB database'),
     host: String(connection.host || '127.0.0.1'),
     port: clamp(connection.port || 3306, 1, 65535),
@@ -1989,7 +2007,9 @@ ipcMain.handle('database:table', async (_event, { connection, tableName, filter,
   return {
     columns,
     rows: data.rows,
+    appliedLimit: clamp(limit, 1, 5000),
     query: data.query,
+    sorts: data.sorts,
     relations: {
       outgoing: outgoingKeys,
       incoming: incomingKeys

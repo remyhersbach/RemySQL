@@ -9,7 +9,7 @@
   </head>
   <body>
     <div class="app-shell">
-      <aside class="connections-panel">
+      <aside id="connectionsPanel" class="connections-panel">
         <header class="panel-header">
           <div class="app-brand">
             <img class="app-logo" src="../../assets/logo.png" height="60" alt="" aria-hidden="true" />
@@ -27,7 +27,7 @@
                 <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
               </svg>
             </button>
-            <button id="newConnectionButton" class="icon-button" title="Nieuwe connectie">+</button>
+            <button id="newConnectionButton" class="icon-button" title="Nieuwe connectie" aria-label="Nieuwe connectie">+</button>
           </div>
         </header>
 
@@ -39,12 +39,16 @@
           </button>
         </div>
         <div id="connectionsList" class="connections-list"></div>
+        <div id="sidebarResizeHandle" class="sidebar-resize-handle" role="separator" tabindex="0" aria-label="Breedte zijbalk" aria-controls="connectionsPanel" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="480" aria-valuenow="330" title="Sleep om de zijbalk te verstellen. Dubbelklik om te herstellen."></div>
       </aside>
 
       <main class="workspace">
         <div class="toolbar">
-          <div>
-            <p id="activeConnectionLabel" class="eyebrow">Geen connectie</p>
+          <div class="workspace-heading">
+            <div class="connection-context">
+              <p id="activeConnectionLabel" class="connection-breadcrumb" aria-label="Actieve context">Geen connectie</p>
+              <span id="environmentBadge" class="environment-badge" hidden></span>
+            </div>
             <h2 id="workspaceTitle">Open of maak een connectie</h2>
           </div>
           <div class="toolbar-actions">
@@ -52,6 +56,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="11" height="11" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
               Alleen lezen
             </span>
+            <button id="sqlButton" class="ghost-button" title="Ruwe SQL uitvoeren" aria-label="Ruwe SQL uitvoeren" disabled>SQL</button>
             <button id="backupButton" class="ghost-button" disabled>Backup tabel</button>
             <button id="refreshButton" class="ghost-button" disabled>Ververs</button>
           </div>
@@ -65,24 +70,22 @@
         </section>
 
         <section id="tableView" class="table-view" hidden>
-          <div class="table-controls">
-            <div class="segmented-control" role="tablist" aria-label="Weergave">
-              <button id="dataModeButton" class="active" role="tab">Data</button>
-              <button id="structureModeButton" role="tab">Structuur</button>
-            </div>
+          <div id="tableControls" class="table-controls">
             <div class="filter-area" id="filterArea">
-              <span class="filter-label">Filter</span>
+              <div class="filter-heading">
+                <span class="filter-label">Filter</span>
+                <span class="filter-hint">Automatisch toegepast</span>
+                <span id="filterStatus" class="filter-status" role="status"></span>
+                <button id="clearFiltersButton" class="filter-clear-button" type="button" hidden>Wis filters</button>
+              </div>
               <div class="filter-input-row">
-                <div class="filter-text-mode" id="filterTextMode">
+                <div class="filter-text-mode" id="filterTextMode" hidden>
                   <input id="filterInput" type="search" placeholder="Zoek in alle kolommen" />
                 </div>
-                <div class="filter-column-mode" id="filterColumnMode" hidden>
+                <div class="filter-column-mode" id="filterColumnMode">
                   <div id="filterColumnRows" class="filter-column-rows"></div>
                 </div>
-                <button id="filterModeToggle" class="filter-mode-toggle" title="Zoek op specifieke kolom" aria-label="Zoek op specifieke kolom">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13" aria-hidden="true"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-                </button>
-                <button id="sqlButton" class="sql-mode-button" title="Ruwe SQL uitvoeren" aria-label="Ruwe SQL uitvoeren">SQL</button>
+                <button id="filterModeToggle" class="filter-mode-toggle" title="Wissel naar vrije tekst" aria-label="Wissel naar vrije tekst" aria-pressed="false">Tekst</button>
               </div>
             </div>
             <label class="limit-input">
@@ -93,7 +96,26 @@
 
           <div class="content-grid">
             <div class="data-panel">
-              <div id="tableMeta" class="table-meta"></div>
+              <div class="table-meta-bar">
+                <div id="tableMeta" class="table-meta" role="status"></div>
+                <div class="view-controls" role="group" aria-label="Tabelweergave">
+                  <div class="segmented-control" role="tablist" aria-label="Weergave">
+                    <button id="dataModeButton" class="active" role="tab">Data</button>
+                    <button id="structureModeButton" role="tab">Structuur</button>
+                  </div>
+                  <button id="columnSearchButton" class="column-search-button" type="button" title="Kolommen zoeken" aria-label="Kolommen zoeken" aria-expanded="false" aria-controls="columnSearch">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                    <span id="columnVisibilityCount" class="column-visibility-count" hidden></span>
+                  </button>
+                  <div id="columnSearch" class="column-search" hidden>
+                    <input id="columnSearchInput" type="search" placeholder="Zoek kolomnaam…" aria-label="Filter zichtbare kolommen op naam" autocomplete="off" spellcheck="false" />
+                    <button id="columnSearchClose" class="ghost-button" type="button" title="Kolomfilter sluiten (Esc)" aria-label="Kolomfilter sluiten en alle kolommen tonen">×</button>
+                  </div>
+                </div>
+              </div>
               <div class="table-scroll">
                 <div id="tableLoader" class="table-loader" hidden>
                   <span class="table-loader-spinner" aria-hidden="true"></span>
@@ -103,6 +125,7 @@
               </div>
               <div class="table-actions" id="tableActions" hidden>
                 <button id="addRowButton" class="ghost-button" disabled>+ Rij toevoegen</button>
+                <span id="pendingSummary" class="pending-summary" role="status"></span>
                 <div id="pendingActions" class="pending-actions" hidden>
                   <button id="saveRowsButton" class="primary-button">Opslaan</button>
                   <button id="discardRowsButton" class="remove-button">Annuleren</button>
@@ -183,6 +206,16 @@
           <input id="connectionNameInput" type="text" placeholder="Lokale shop database" />
         </label>
       </div>
+      <label class="connection-environment-field">
+        Omgeving
+        <select id="connectionEnvironmentSelect">
+          <option value="auto">Automatisch op basis van naam of groep</option>
+          <option value="production">Productie</option>
+          <option value="test">Test</option>
+          <option value="development">Ontwikkeling</option>
+          <option value="none">Geen label</option>
+        </select>
+      </label>
       <div id="mariaFields" class="connection-fieldset">
         <label class="connection-mode-field">
           Verbinding
