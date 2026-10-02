@@ -7,6 +7,8 @@ const state = {
   activeTabId: null,
   tablePayloadByTab: new Map(),
   tableLoadSeqByTab: new Map(),
+  tableLoadingByTab: new Set(),
+  filterDirtyByTab: new Set(),
   selectedRowsByTab: new Map(),
   anchorRowByTab: new Map(),
   relationLookupByTab: new Map(),
@@ -627,8 +629,14 @@ function isRunnableColumnFilter(item) {
 }
 
 function debounceLoadActiveTable() {
+  const tabId = state.activeTabId;
+  if (!tabId) return;
+  state.filterDirtyByTab.add(tabId);
   clearTimeout(state.filterTimer);
-  state.filterTimer = setTimeout(loadActiveTable, 220);
+  state.filterTimer = setTimeout(() => {
+    state.filterTimer = null;
+    if (state.activeTabId === tabId) loadActiveTable();
+  }, 220);
 }
 
 function escapeHtml(value) {
@@ -1271,6 +1279,8 @@ async function removeConnection(connectionId) {
     state.sortTimerByTab.delete(tab.id);
     state.tablePayloadByTab.delete(tab.id);
     state.tableLoadSeqByTab.delete(tab.id);
+    state.tableLoadingByTab.delete(tab.id);
+    state.filterDirtyByTab.delete(tab.id);
     state.sshSessionByTab.delete(tab.id);
     state.sshOutputByTab.delete(tab.id);
     disposeSshTerminal(tab.id);
@@ -1285,6 +1295,8 @@ async function removeConnection(connectionId) {
       state.sortTimerByTab.delete(tabId);
       state.tablePayloadByTab.delete(tabId);
       state.tableLoadSeqByTab.delete(tabId);
+      state.tableLoadingByTab.delete(tabId);
+      state.filterDirtyByTab.delete(tabId);
       state.selectedRowsByTab.delete(tabId);
       state.anchorRowByTab.delete(tabId);
       state.relationLookupByTab.delete(tabId);
@@ -1336,6 +1348,8 @@ async function disconnectConnection(connectionId) {
     state.sortTimerByTab.delete(tab.id);
     state.tablePayloadByTab.delete(tab.id);
     state.tableLoadSeqByTab.delete(tab.id);
+    state.tableLoadingByTab.delete(tab.id);
+    state.filterDirtyByTab.delete(tab.id);
     state.selectedRowsByTab.delete(tab.id);
     state.anchorRowByTab.delete(tab.id);
     state.relationLookupByTab.delete(tab.id);
@@ -1643,13 +1657,25 @@ function renderSshView() {
   ensureSshTerminal(tab);
 }
 
+function showActiveTab() {
+  clearTimeout(state.filterTimer);
+  state.filterTimer = null;
+  const tab = getActiveTab();
+  setTableLoading(Boolean(tab && state.tableLoadingByTab.has(tab.id)));
+  render();
+  if (tab?.type === 'database' && (state.filterDirtyByTab.has(tab.id)
+    || (!state.tablePayloadByTab.has(tab.id) && !state.tableLoadingByTab.has(tab.id)))) {
+    return loadActiveTable();
+  }
+  return state.tablePayloadByTab.get(tab?.id) || null;
+}
+
 async function openTable(connection, tableName) {
   const existing = state.tabs.find((tab) => tab.connectionId === connection.id && tab.tableName === tableName);
   if (existing) {
     state.activeTabId = existing.id;
     state.activeConnectionId = connection.id;
-    render();
-    return loadActiveTable();
+    return showActiveTab();
   }
 
   const tab = {
@@ -1681,6 +1707,8 @@ async function loadActiveTable() {
 
   const loadSeq = (state.tableLoadSeqByTab.get(tab.id) || 0) + 1;
   state.tableLoadSeqByTab.set(tab.id, loadSeq);
+  state.filterDirtyByTab.delete(tab.id);
+  state.tableLoadingByTab.add(tab.id);
   setTableLoading(true);
 
   try {
@@ -1695,7 +1723,7 @@ async function loadActiveTable() {
       sort,
       columnFilter
     });
-    if (state.tableLoadSeqByTab.get(tab.id) !== loadSeq) {
+    if (state.tableLoadSeqByTab.get(tab.id) !== loadSeq || state.filterDirtyByTab.has(tab.id)) {
       return null;
     }
     if (sort?.column && sort?.direction && payload.columns?.some((column) => column.name === sort.column)) {
@@ -1706,7 +1734,7 @@ async function loadActiveTable() {
         sort
       });
       const result = await window.sqlBase.runSql({ connection, sql: query });
-      if (state.tableLoadSeqByTab.get(tab.id) !== loadSeq) {
+      if (state.tableLoadSeqByTab.get(tab.id) !== loadSeq || state.filterDirtyByTab.has(tab.id)) {
         return null;
       }
       payload.rows = result.rows || [];
@@ -1729,16 +1757,17 @@ async function loadActiveTable() {
         state.anchorRowByTab.delete(tab.id);
       }
     }
-    renderTableView();
+    if (state.activeTabId === tab.id) renderTableView();
     return payload;
   } catch (error) {
-    if (state.tableLoadSeqByTab.get(tab.id) === loadSeq) {
+    if (state.tableLoadSeqByTab.get(tab.id) === loadSeq && !state.filterDirtyByTab.has(tab.id)) {
       showToast(error.message);
     }
     return null;
   } finally {
     if (state.tableLoadSeqByTab.get(tab.id) === loadSeq) {
-      setTableLoading(false);
+      state.tableLoadingByTab.delete(tab.id);
+      if (state.activeTabId === tab.id) setTableLoading(false);
     }
   }
 }
@@ -1763,6 +1792,7 @@ async function loadSortedActiveTable() {
 
   const loadSeq = (state.tableLoadSeqByTab.get(tab.id) || 0) + 1;
   state.tableLoadSeqByTab.set(tab.id, loadSeq);
+  state.tableLoadingByTab.add(tab.id);
   setTableLoading(true, 'Sorteren...');
 
   try {
@@ -1781,7 +1811,7 @@ async function loadSortedActiveTable() {
     state.relationLookupByTab.delete(tab.id);
     state.selectedRowsByTab.delete(tab.id);
     state.anchorRowByTab.delete(tab.id);
-    renderTableView();
+    if (state.activeTabId === tab.id) renderTableView();
     return state.tablePayloadByTab.get(tab.id);
   } catch (error) {
     if (state.tableLoadSeqByTab.get(tab.id) === loadSeq) {
@@ -1790,7 +1820,8 @@ async function loadSortedActiveTable() {
     return null;
   } finally {
     if (state.tableLoadSeqByTab.get(tab.id) === loadSeq) {
-      setTableLoading(false);
+      state.tableLoadingByTab.delete(tab.id);
+      if (state.activeTabId === tab.id) setTableLoading(false);
     }
   }
 }
@@ -1807,6 +1838,8 @@ function closeTab(tabId) {
   state.tabs = state.tabs.filter((tab) => tab.id !== tabId);
   state.tablePayloadByTab.delete(tabId);
   state.tableLoadSeqByTab.delete(tabId);
+  state.tableLoadingByTab.delete(tabId);
+  state.filterDirtyByTab.delete(tabId);
   state.sshSessionByTab.delete(tabId);
   state.sshOutputByTab.delete(tabId);
   disposeSshTerminal(tabId);
@@ -1822,11 +1855,12 @@ function closeTab(tabId) {
     state.activeTabId = state.tabs[Math.max(0, index - 1)]?.id || state.tabs[0]?.id || null;
   }
 
-  render();
-  renderTableView();
+  showActiveTab();
 }
 
 function closeAllTabs() {
+  clearTimeout(state.filterTimer);
+  state.filterTimer = null;
   for (const tab of state.tabs) {
     clearTimeout(state.sortTimerByTab.get(tab.id));
     const sshSessionId = state.sshSessionByTab.get(tab.id);
@@ -1840,6 +1874,8 @@ function closeAllTabs() {
   state.activeTabId = null;
   state.tablePayloadByTab.clear();
   state.tableLoadSeqByTab.clear();
+  state.tableLoadingByTab.clear();
+  state.filterDirtyByTab.clear();
   state.sshSessionByTab.clear();
   state.sshOutputByTab.clear();
   state.selectedRowsByTab.clear();
@@ -3642,10 +3678,7 @@ elements.tabsBar.addEventListener('click', (event) => {
     if (nextTab?.connectionId) {
       state.activeConnectionId = nextTab.connectionId;
     }
-    render();
-    if (nextTab?.type !== 'ssh') {
-      loadActiveTable();
-    }
+    showActiveTab();
   }
 });
 

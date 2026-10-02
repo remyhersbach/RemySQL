@@ -4,6 +4,13 @@ Alle noemenswaardige wijzigingen in RemySQL staan in dit bestand.
 
 Gebruik per release een kop zoals `## 0.2.4 - 2026-05-31`. Het release-script vult de inhoud vanuit `RELEASE_NOTES.md`.
 
+## 0.2.17 - 2026-10-02
+
+### Tabs en filters
+
+- Wisselen tussen tabs toont direct de eerder geladen tabelresultaten, zonder nieuwe databaseaanvraag.
+- Na een wijziging van een zoekfilter worden de resultaten van die tab opnieuw geladen.
+
 ## 0.2.16 - 2026-09-25
 
 ### UI en bediening
