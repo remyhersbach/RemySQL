@@ -9,6 +9,9 @@ Een eerste basis voor een DBeaver/SQL Ace-achtige desktop database-manager in El
 - Connecties persistent bewaren in Electron user data.
 - MySQL-, MariaDB- en SQLite-connecties uit DBeaver importeren, inclusief opgeslagen inloggegevens en SSH-tunnels.
 - Tabellen bekijken en openen in tabs.
+- Thema kiezen via het icoon in de zijbalk: Licht, Donker of Volg systeemvoorkeuren (standaard). De systeemoptie reageert direct op wijzigingen in het systeemthema.
+- Via rechtermuisknop op een tabel: Truncate table of Drop table, met bevestiging en respect voor alleen-lezen-connecties.
+- Exporteer als CSV naast Backup tabel: alle rijen met de actieve filters en sortering, zonder de ingestelde weergavelimiet. Bij eigen SQL worden alle teruggegeven rijen geëxporteerd, inclusief alle kolommen en met behoud van een eventuele expliciete SQL-LIMIT.
 - Actieve connectie, database en tabel als breadcrumb, met een omgevingsbadge. Stel Productie, Test of Ontwikkeling in via Connectie bewerken; automatisch herkennen uit naam/groep en Geen label zijn ook beschikbaar.
 - Verbindingsstatus: grijs voor niet verbonden, groen voor actief en rood bij een verbindingsfout.
 - Verstelbare zijbalk met onthouden breedte. Sleep de rechterrand, gebruik de pijltjestoetsen op de scheiding of dubbelklik om de standaardbreedte te herstellen.

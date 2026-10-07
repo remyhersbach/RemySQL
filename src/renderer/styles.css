@@ -295,16 +295,20 @@ button:disabled {
   height: 14px;
 }
 
-.icon-button .theme-icon-sun {
+.icon-button .theme-icon-moon,
+.icon-button .theme-icon-sun,
+.icon-button .theme-icon-system {
   display: none;
 }
 
-[data-theme="dark"] .icon-button .theme-icon-sun {
+[data-theme-preference="light"] .icon-button .theme-icon-sun,
+[data-theme-preference="dark"] .icon-button .theme-icon-moon,
+[data-theme-preference="system"] .icon-button .theme-icon-system {
   display: block;
 }
 
-[data-theme="dark"] .icon-button .theme-icon-moon {
-  display: none;
+.theme-menu > button[aria-checked="true"] {
+  background: var(--interactive-bg);
 }
 
 .primary-button,

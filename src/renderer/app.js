@@ -34,6 +34,7 @@ const state = {
   sortByTab: new Map(),
   sortTimerByTab: new Map(),
   editSelectionSnapshot: null,
+  exportingCsv: false,
   sidebarFilterOpen: false
 };
 
@@ -57,6 +58,7 @@ const connectionFormDrag = {
 
 const elements = {
   themeToggleButton: document.querySelector('#themeToggleButton'),
+  themeMenu: document.querySelector('#themeMenu'),
   newConnectionButton: document.querySelector('#newConnectionButton'),
   connectionForm: document.querySelector('#connectionForm'),
   connectionFormHeader: document.querySelector('#connectionForm .connection-form-header'),
@@ -97,6 +99,7 @@ const elements = {
   environmentBadge: document.querySelector('#environmentBadge'),
   workspaceTitle: document.querySelector('#workspaceTitle'),
   backupButton: document.querySelector('#backupButton'),
+  exportCsvButton: document.querySelector('#exportCsvButton'),
   refreshButton: document.querySelector('#refreshButton'),
   tabsBar: document.querySelector('#tabsBar'),
   emptyState: document.querySelector('#emptyState'),
@@ -1650,6 +1653,7 @@ function renderSshView() {
   elements.sshView.hidden = false;
   elements.refreshButton.disabled = true;
   elements.backupButton.disabled = true;
+  elements.exportCsvButton.disabled = true;
   elements.workspaceTitle.textContent = tab.tableName;
   syncConnectionContext(connection, tab);
   elements.sqlButton.disabled = true;
@@ -2752,6 +2756,7 @@ function renderTableView() {
   const hasDatabaseConnection = Boolean(activeConnection && activeConnection.type !== 'ssh');
   elements.refreshButton.disabled = !hasDatabaseConnection;
   elements.backupButton.disabled = !(tab?.type === 'database' && payload && hasDatabaseConnection && !isSqlResult);
+  elements.exportCsvButton.disabled = !(tab?.type === 'database' && payload && hasDatabaseConnection) || state.exportingCsv;
   elements.tableActions.hidden = !tab || !payload;
   elements.addRowButton.disabled = !isDataMode || isReadOnly || isSqlResult;
   elements.sqlButton.disabled = !tab || !payload || isReadOnly;
@@ -2955,7 +2960,7 @@ function render() {
 }
 
 function closeConnectionContextMenu() {
-  document.querySelector('.connection-context-menu:not(.row-context-menu):not(.table-context-menu)')?.remove();
+  document.querySelector('.connection-context-menu:not(.row-context-menu):not(.table-context-menu):not(.theme-menu)')?.remove();
   state.contextMenuConnectionId = null;
 }
 
@@ -2979,6 +2984,7 @@ function positionContextMenu(menu, event) {
 
 function openRowContextMenu(event, rowIndex) {
   event.preventDefault();
+  closeThemeMenu();
   closeConnectionContextMenu();
   closeTableContextMenu();
   closeRowContextMenu();
@@ -3012,6 +3018,7 @@ function openRowContextMenu(event, rowIndex) {
 
 function openTableContextMenu(event, connectionId, tableName, tableType) {
   event.preventDefault();
+  closeThemeMenu();
   closeConnectionContextMenu();
   closeTableContextMenu();
   closeRowContextMenu();
@@ -3031,6 +3038,12 @@ function openTableContextMenu(event, connectionId, tableName, tableType) {
       </span>
       Truncate table
     </button>
+    <button type="button" data-table-context-action="drop" class="danger" ${canTruncate ? '' : 'disabled'}>
+      <span class="context-menu-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18M13 13l5 5m0-5-5 5"/></svg>
+      </span>
+      Drop table
+    </button>
   `;
   document.body.appendChild(menu);
   positionContextMenu(menu, event);
@@ -3038,6 +3051,7 @@ function openTableContextMenu(event, connectionId, tableName, tableType) {
 
 function openConnectionContextMenu(event, connectionId) {
   event.preventDefault();
+  closeThemeMenu();
   closeConnectionContextMenu();
   closeTableContextMenu();
   closeRowContextMenu();
@@ -3084,10 +3098,55 @@ function openConnectionContextMenu(event, connectionId) {
   positionContextMenu(menu, event);
 }
 
+const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
+let themePreference = 'system';
+
 function applyTheme(theme) {
-  const next = theme === 'dark' ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', next);
-  try { localStorage.setItem('sqlbase.theme', next); } catch {}
+  themePreference = ['light', 'dark'].includes(theme) ? theme : 'system';
+  const resolved = themePreference === 'system' ? (systemTheme.matches ? 'dark' : 'light') : themePreference;
+  document.documentElement.setAttribute('data-theme', resolved);
+  document.documentElement.setAttribute('data-theme-preference', themePreference);
+  const label = { light: 'Licht', dark: 'Donker', system: 'Volg systeemvoorkeuren' }[themePreference];
+  elements.themeToggleButton.title = `Thema: ${label}`;
+  elements.themeToggleButton.setAttribute('aria-label', `Kies thema: ${label}`);
+  elements.themeMenu.querySelectorAll('[data-theme-choice]').forEach((button) => {
+    button.setAttribute('aria-checked', String(button.dataset.themeChoice === themePreference));
+  });
+  try { localStorage.setItem('sqlbase.theme', themePreference); } catch {}
+}
+
+function closeThemeMenu() {
+  elements.themeMenu.hidden = true;
+  elements.themeToggleButton.setAttribute('aria-expanded', 'false');
+}
+
+async function exportActiveCsv() {
+  const tab = getActiveTab();
+  const connection = state.connections.find((item) => item.id === tab?.connectionId);
+  const payload = state.tablePayloadByTab.get(tab?.id);
+  if (!tab || tab.type !== 'database' || !connection || !payload || state.exportingCsv) return;
+  const filter = getFilterForTab(tab.id);
+  // SQL results are already complete. Reusing them also avoids executing SQL twice.
+  const request = payload.isSqlResult
+    ? { connection, tableName: tab.tableName, rows: payload.rows, columns: payload.columns }
+    : {
+      connection, tableName: tab.tableName,
+      filter: filter.mode === 'text' ? filter.text : '',
+      columnFilter: getActiveColumnFilter(), sort: state.sortByTab.get(tab.id)
+    };
+  state.exportingCsv = true;
+  elements.exportCsvButton.disabled = true;
+  elements.exportCsvButton.textContent = 'Exporteren...';
+  try {
+    const result = await window.sqlBase.exportCsv(request);
+    if (!result?.canceled) showToast(`CSV-export klaar: ${result.filePath}`);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.exportingCsv = false;
+    elements.exportCsvButton.textContent = 'Exporteer als CSV';
+    renderTableView();
+  }
 }
 
 async function backupActiveTable() {
@@ -3155,6 +3214,36 @@ async function truncateSidebarTable(context) {
   }
 }
 
+async function dropSidebarTable(context) {
+  const { connectionId, tableName, tableType } = context || {};
+  const connection = state.connections.find((item) => item.id === connectionId);
+  if (!connection || !tableName) return;
+  if (connection.readOnly) {
+    showToast('Alleen lezen staat aan voor deze connectie.');
+    return;
+  }
+  if (!isTruncatableTableType(tableType)) {
+    showToast('Alleen echte tabellen kunnen worden verwijderd.');
+    return;
+  }
+  if (!confirm(`Tabel "${tableName}" definitief verwijderen, inclusief alle data en de structuur? Dit kan niet ongedaan worden gemaakt.`)) return;
+  try {
+    await window.sqlBase.dropTable({ connection, tableName });
+    const schema = state.schemaByConnection.get(connectionId);
+    if (schema) schema.tables = schema.tables.filter((table) => table.name !== tableName);
+    for (const tab of [...state.tabs]) {
+      if (tab.connectionId === connectionId && tab.tableName === tableName) closeTab(tab.id);
+      else if (tab.connectionId === connectionId) state.relationLookupByTab.delete(tab.id);
+    }
+    render();
+    showToast(`Tabel "${tableName}" verwijderd.`);
+    await fetchSchemaForConnection(connection);
+    renderConnections();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
 async function refreshActiveView() {
   const tab = getActiveTab();
   const connection = tab?.type === 'database'
@@ -3199,19 +3288,57 @@ async function refreshActiveView() {
 (function initTheme() {
   let saved = null;
   try { saved = localStorage.getItem('sqlbase.theme'); } catch {}
-  if (saved === 'dark' || saved === 'light') {
-    applyTheme(saved);
-  } else {
-    applyTheme(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  }
+  applyTheme(saved);
 })();
 
-elements.themeToggleButton.addEventListener('click', () => {
-  const current = document.documentElement.getAttribute('data-theme');
-  applyTheme(current === 'dark' ? 'light' : 'dark');
+systemTheme.addEventListener('change', () => {
+  if (themePreference === 'system') applyTheme('system');
 });
 
+elements.themeToggleButton.addEventListener('click', () => {
+  const open = elements.themeMenu.hidden;
+  closeThemeMenu();
+  if (!open) return;
+  closeConnectionContextMenu();
+  closeTableContextMenu();
+  closeRowContextMenu();
+  elements.themeMenu.hidden = false;
+  elements.themeToggleButton.setAttribute('aria-expanded', 'true');
+  const rect = elements.themeToggleButton.getBoundingClientRect();
+  positionContextMenu(elements.themeMenu, { clientX: rect.left, clientY: rect.bottom + 6 });
+  elements.themeMenu.querySelector('[aria-checked="true"]').focus();
+});
+
+elements.themeMenu.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-theme-choice]');
+  if (!button) return;
+  applyTheme(button.dataset.themeChoice);
+  closeThemeMenu();
+  elements.themeToggleButton.focus();
+});
+
+elements.themeMenu.addEventListener('keydown', (event) => {
+  const buttons = [...elements.themeMenu.querySelectorAll('button')];
+  const index = buttons.indexOf(document.activeElement);
+  if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+      : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[next].focus();
+  } else if (event.key === 'Escape' || event.key === 'Tab') {
+    closeThemeMenu();
+    if (event.key === 'Escape') elements.themeToggleButton.focus();
+  }
+});
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('#themeMenu, #themeToggleButton')) closeThemeMenu();
+});
+window.addEventListener('resize', closeThemeMenu);
+window.addEventListener('blur', closeThemeMenu);
+
 elements.backupButton.addEventListener('click', backupActiveTable);
+elements.exportCsvButton.addEventListener('click', exportActiveCsv);
 
 elements.connectionFormHeader.addEventListener('pointerdown', (event) => {
   if (event.button !== 0 || event.target.closest('button')) return;
@@ -3386,10 +3513,11 @@ document.addEventListener('click', async (event) => {
     await removeConnection(connectionId);
   }
 
-  if (tableActionButton?.dataset.tableContextAction === 'truncate' && state.contextMenuTable) {
+  if (tableActionButton && !tableActionButton.disabled && state.contextMenuTable) {
     const context = state.contextMenuTable;
     closeTableContextMenu();
-    await truncateSidebarTable(context);
+    if (tableActionButton.dataset.tableContextAction === 'drop') await dropSidebarTable(context);
+    else if (tableActionButton.dataset.tableContextAction === 'truncate') await truncateSidebarTable(context);
   }
 });
 

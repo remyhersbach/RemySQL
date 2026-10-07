@@ -5,6 +5,7 @@ const net = require('node:net');
 const path = require('node:path');
 const { createCipheriv, createDecipheriv, randomBytes, randomUUID } = require('node:crypto');
 const { defaultDBeaverPath, resolveDBeaverPath, readDBeaverConnections, mergeDBeaverConnections } = require('./dbeaver-import');
+const { csvLine, writeCsv } = require('./csv');
 app.name = 'RemySQL';
 
 let mariadb;
@@ -1038,7 +1039,7 @@ function appendSqliteColumnFilterClauses(clauses, columns, columnFilter) {
   });
 }
 
-async function getSqliteData(databasePath, tableName, filter, limit, columnFilter, sort) {
+async function getSqliteData(databasePath, tableName, filter, limit, columnFilter, sort, exportAll = false) {
   const safeLimit = clamp(limit, 1, 5000);
   const columns = await getSqliteColumns(databasePath, tableName);
   const searchableColumns = columns.map((column) => column.name);
@@ -1057,7 +1058,8 @@ async function getSqliteData(databasePath, tableName, filter, limit, columnFilte
   const order = sorts.length
     ? ` ORDER BY ${sorts.map((item) => `${quoteSqliteIdentifier(item.column)} ${item.direction.toUpperCase()}`).join(', ')}`
     : '';
-  const query = `SELECT * FROM ${quoteSqliteIdentifier(tableName)}${where}${order} LIMIT ${safeLimit};`;
+  const query = `SELECT * FROM ${quoteSqliteIdentifier(tableName)}${where}${order}${exportAll ? '' : ` LIMIT ${safeLimit}`};`;
+  if (exportAll) return { columns, query };
   const rows = await runSqlite(databasePath, query);
   return { rows, query, sorts };
 }
@@ -1160,7 +1162,7 @@ function appendMariaColumnFilterClauses(clauses, values, columns, columnFilter) 
   });
 }
 
-async function getMariaData(connection, tableName, filter, limit, columnFilter, sort) {
+async function getMariaData(connection, tableName, filter, limit, columnFilter, sort, exportAll = false) {
   const safeLimit = clamp(limit, 1, 5000);
   const columns = await getMariaColumns(connection, tableName);
   const searchableColumns = columns.map((column) => column.name);
@@ -1181,7 +1183,8 @@ async function getMariaData(connection, tableName, filter, limit, columnFilter, 
   const order = sorts.length
     ? ` ORDER BY ${sorts.map((item) => `${quoteMariaIdentifier(item.column)} ${item.direction.toUpperCase()}`).join(', ')}`
     : '';
-  const query = `SELECT * FROM ${quoteMariaIdentifier(tableName)}${where}${order} LIMIT ${safeLimit};`;
+  const query = `SELECT * FROM ${quoteMariaIdentifier(tableName)}${where}${order}${exportAll ? '' : ` LIMIT ${safeLimit}`};`;
+  if (exportAll) return { columns, query, values };
   const rows = await runMariaDb(connection, query, values);
   return { rows, query: interpolateSql(query, values), sorts };
 }
@@ -1404,6 +1407,82 @@ async function truncateTable(connection, tableName) {
 
   await truncateMariaTable(connection, tableName);
   return { ok: true };
+}
+
+async function dropTable(connection, tableName) {
+  assertWritableConnection(connection);
+  if (!tableName) throw new Error('Geen tabel gekozen.');
+  const table = (await getTables(connection)).find((item) => item.name === tableName);
+  const type = String(table?.type || '').toLowerCase();
+  if (!table || !['table', 'base table'].includes(type)) {
+    throw new Error('Alleen echte tabellen kunnen worden verwijderd.');
+  }
+  if (connection.type === 'sqlite') {
+    await runSqlite(connection.path, `DROP TABLE ${quoteSqliteIdentifier(tableName)};`);
+  } else {
+    await runMariaDb(connection, `DROP TABLE ${quoteMariaIdentifier(tableName)};`);
+  }
+  return { ok: true };
+}
+
+async function* tableCsvChunks(connection, tableName, filter, columnFilter, sort) {
+  const spec = connection.type === 'sqlite'
+    ? await getSqliteData(connection.path, tableName, filter, null, columnFilter, sort, true)
+    : await getMariaData(connection, tableName, filter, null, columnFilter, sort, true);
+  const names = spec.columns.map((column) => column.name);
+  yield csvLine(names);
+
+  if (connection.type === 'sqlite') {
+    // Stream directly from sqlite3, avoiding the JSON runner's 20 MB buffer limit.
+    const child = spawn('sqlite3', ['-csv', connection.path, spec.query]);
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-8192); });
+    const completion = new Promise((resolve) => {
+      child.once('error', (error) => resolve({ error }));
+      child.once('close', (code) => resolve({ code }));
+    });
+    try {
+      for await (const chunk of child.stdout) yield chunk;
+      const result = await completion;
+      if (result.error) throw result.error;
+      if (result.code !== 0) throw new Error(stderr || 'SQLite export mislukt.');
+    } finally {
+      if (child.exitCode === null) child.kill();
+    }
+    return;
+  }
+
+  const handle = await openMariaDbClient(connection);
+  let stream;
+  try {
+    stream = handle.client.queryStream(spec.query, spec.values);
+    for await (const row of stream) {
+      yield csvLine(names.map((name) => normalizeDbValue(row[name])));
+    }
+  } finally {
+    stream?.close();
+    await handle.cleanup();
+  }
+}
+
+async function saveCsv({ connection, tableName, filter, columnFilter, sort, rows, columns }) {
+  if (!tableName) throw new Error('Geen tabel gekozen.');
+  const safeName = getSafeFilename(`${connection.name || connection.database || 'database'}-${tableName}`);
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Exporteer als CSV',
+    defaultPath: `${safeName}-${getTimestampSlug()}.csv`,
+    filters: [{ name: 'CSV', extensions: ['csv'] }]
+  });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  const chunks = Array.isArray(rows)
+    ? (async function* () {
+      const names = columns.map((column) => column.name);
+      yield csvLine(names);
+      for (const row of rows) yield csvLine(names.map((name) => row[name]));
+    })()
+    : tableCsvChunks(connection, tableName, filter, columnFilter, sort);
+  await writeCsv(result.filePath, chunks);
+  return { canceled: false, filePath: result.filePath };
 }
 
 function normalizeConnection(connection, { allowIncomplete = false } = {}) {
@@ -2072,6 +2151,12 @@ ipcMain.handle('database:delete-rows', async (_event, { connection, tableName, r
 ipcMain.handle('database:truncate-table', async (_event, { connection, tableName }) => {
   return truncateTable(connection, tableName);
 });
+
+ipcMain.handle('database:drop-table', async (_event, { connection, tableName }) => {
+  return dropTable(connection, tableName);
+});
+
+ipcMain.handle('database:export-csv', async (_event, payload) => saveCsv(payload));
 
 ipcMain.handle('database:run-sql', async (_event, { connection, sql }) => {
   const trimmed = String(sql || '').trim();

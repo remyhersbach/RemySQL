@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('sqlBase', {
   updateRows: (payload) => ipcRenderer.invoke('database:update-rows', payload),
   deleteRows: (payload) => ipcRenderer.invoke('database:delete-rows', payload),
   truncateTable: (payload) => ipcRenderer.invoke('database:truncate-table', payload),
+  dropTable: (payload) => ipcRenderer.invoke('database:drop-table', payload),
+  exportCsv: (payload) => ipcRenderer.invoke('database:export-csv', payload),
   runSql: (payload) => ipcRenderer.invoke('database:run-sql', payload),
   backupTable: (payload) => ipcRenderer.invoke('database:backup-table', payload),
   onNewMariaDbConnection: (callback) => {
