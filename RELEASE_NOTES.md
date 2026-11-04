@@ -1,14 +1,9 @@
 # RemySQL {{tag}}
 
-## Thema en tabelbeheer
+## Zoeken in de zijbalk
 
-- De themakeuze bevat nu Licht, Donker en Volg systeemvoorkeuren. Volg systeemvoorkeuren is de standaard voor nieuwe instellingen en past het thema direct aan bij een wijziging van het systeemthema.
-- Bestaande expliciete voorkeuren voor Licht of Donker blijven bewaard.
-- Het rechtermuisknopmenu op een tabel bevat nu Drop table, met bevestiging voordat de tabel inclusief data en structuur wordt verwijderd. De actie is geblokkeerd voor views en alleen-lezen-connecties.
-
-## CSV-export
-
-- Naast Backup tabel staat nu Exporteer als CSV. De export bevat alle rijen en kolommen met de actieve filters en sortering, zonder de ingestelde weergavelimiet.
-- Bij eigen SQL wordt het volledige teruggegeven resultaat geëxporteerd, met behoud van een eventuele expliciete SQL-LIMIT en zonder de query opnieuw uit te voeren.
-- Tabelexports worden rechtstreeks naar het bestand geschreven, zodat ook meer dan 5.000 rijen en grote resultaten kunnen worden geëxporteerd. Komma's, aanhalingstekens, regeleinden en Unicode blijven behouden.
-- Een mislukte export overschrijft geen bestaand CSV-bestand.
+- Zoeken op verbindingen: met `Cmd+F` (`Ctrl+F` op Windows/Linux) in de zijbalk filter je nu ook de connectielijst, net zoals je binnen een connectie al op tabelnaam kon zoeken.
+- Er wordt gezocht op connectienaam en op de gegevens eronder, dus ook op host, poort, gebruiker, databasenaam of SQLite-pad.
+- Groepen blijven zichtbaar: een treffer op de groepsnaam toont de hele groep, anders toont de groep alleen de bijpassende connecties. Groepen zonder treffers verdwijnen uit de lijst.
+- Zonder treffers verschijnt "Geen resultaten". `Esc` of het kruisje sluit het zoekveld, en het zoekveld wordt gewist bij het wisselen tussen de connectielijst en de tabellijst.
+- Tijdens het zoeken staat slepen van connecties uit, zodat je in een gefilterde lijst niet per ongeluk de volgorde of groepering wijzigt.
