@@ -24,6 +24,7 @@
   },
   "build": {
     "appId": "com.remyhersbach.remysql",
+    "afterPack": "scripts/sign-adhoc.js",
     "copyright": "© 2025 Remy Hersbach",
     "directories": {
       "output": "dist"

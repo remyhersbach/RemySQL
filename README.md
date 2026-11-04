@@ -62,6 +62,18 @@ npm test
 
 De importtests gebruiken tijdelijke fixtures en controleren ook de IPC-opslag, versleuteling en dubbele imports. Ze gebruiken geen echte databaseverbindingen of je eigen connectieopslag.
 
+## Installeren vanaf een release
+
+De DMG wordt niet ondertekend met een Developer ID en is niet genotariseerd, want daar is het betaalde Apple Developer Program voor nodig. De app krijgt bij het bouwen wel een geldige ad-hoc handtekening, zodat macOS hem niet voor beschadigd aanziet.
+
+Na het downloaden houdt Gatekeeper de app tegen met de melding dat Apple hem niet kan controleren. Sleep de app naar Programma's en haal daarna de quarantainevlag weg:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/RemySQL.app
+```
+
+Dat kan ook zonder terminal: open de app, klik de melding weg en kies in Systeeminstellingen bij Privacy en beveiliging voor Toch openen.
+
 ## Release maken
 
 Gebruik het release-script vanaf een schone git worktree. `RELEASE_NOTES.md` mag al handmatig aangepast zijn; dat bestand wordt meegenomen in de release-commit.
