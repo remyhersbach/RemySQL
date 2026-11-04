@@ -35,7 +35,13 @@ const state = {
   sortTimerByTab: new Map(),
   editSelectionSnapshot: null,
   exportingCsv: false,
-  sidebarFilterOpen: false
+  sidebarFilterOpen: false,
+  sidebarFilterView: 'connections'
+};
+
+const sidebarFilterPlaceholders = {
+  tables: 'Zoek tabel…',
+  connections: 'Zoek verbinding…'
 };
 
 const connectionColorOptions = [
@@ -2151,6 +2157,27 @@ function getSidebarTableKindLabel(type) {
   return normalized;
 }
 
+function connectionMatchesQuery(connection, query) {
+  if (!query) return true;
+  const haystack = `${connection.name} ${getConnectionSummary(connection) || ''}`.toLowerCase();
+  return haystack.includes(query);
+}
+
+function syncSidebarFilterView(view) {
+  if (state.sidebarFilterView === view) return;
+  state.sidebarFilterView = view;
+  state.sidebarFilterOpen = false;
+  elements.sidebarFilterInput.value = '';
+  elements.sidebarFilterClear.hidden = true;
+}
+
+function getSidebarFilterQuery(view) {
+  syncSidebarFilterView(view);
+  elements.sidebarFilterInput.placeholder = sidebarFilterPlaceholders[view];
+  elements.sidebarFilterWrap.hidden = !state.sidebarFilterOpen;
+  return state.sidebarFilterOpen ? elements.sidebarFilterInput.value.toLowerCase().trim() : '';
+}
+
 function renderConnections() {
   const connection = getActiveConnection();
 
@@ -2172,10 +2199,9 @@ function renderConnections() {
       </div>
     `;
 
-    elements.sidebarFilterWrap.hidden = !state.sidebarFilterOpen;
+    const filterQ = getSidebarFilterQuery('tables');
 
     const tables = schema?.tables || [];
-    const filterQ = elements.sidebarFilterInput.value.toLowerCase().trim();
     const visibleTables = filterQ ? tables.filter((t) => t.name.toLowerCase().includes(filterQ)) : tables;
     elements.connectionsList.innerHTML = visibleTables.length
       ? visibleTables.map((table) => {
@@ -2196,9 +2222,7 @@ function renderConnections() {
 
     elements.connectionsList.dataset.view = 'tables';
   } else {
-    elements.sidebarFilterInput.value = '';
-    elements.sidebarFilterWrap.hidden = true;
-    state.sidebarFilterOpen = false;
+    const filterQ = getSidebarFilterQuery('connections');
     elements.sidebarNav.innerHTML = '<div class="section-title">Connecties</div>';
     elements.connectionsList.innerHTML = '';
     elements.connectionsList.dataset.view = 'connections';
@@ -2218,7 +2242,7 @@ function renderConnections() {
       const item = document.createElement('article');
       item.className = 'connection-item';
       item.dataset.connectionCardId = conn.id;
-      item.draggable = true;
+      item.draggable = !filterQ;
       if (isHexColor(conn.backgroundColor)) {
         item.classList.add('has-custom-color');
         item.style.setProperty('--connection-bg', conn.backgroundColor);
@@ -2272,7 +2296,28 @@ function renderConnections() {
       if (conn.groupName) group.name = conn.groupName;
     }
 
-    for (const entry of entries) {
+    const visibleEntries = filterQ
+      ? entries.reduce((kept, entry) => {
+          if (entry.type === 'connection') {
+            if (connectionMatchesQuery(entry.connection, filterQ)) kept.push(entry);
+            return kept;
+          }
+
+          const groupMatches = entry.name.toLowerCase().includes(filterQ);
+          const connections = groupMatches
+            ? entry.connections
+            : entry.connections.filter((conn) => connectionMatchesQuery(conn, filterQ));
+          if (connections.length) kept.push({ ...entry, connections });
+          return kept;
+        }, [])
+      : entries;
+
+    if (!visibleEntries.length) {
+      elements.connectionsList.innerHTML = '<p class="muted-note">Geen resultaten.</p>';
+      return;
+    }
+
+    for (const entry of visibleEntries) {
       if (entry.type === 'connection') {
         appendConnectionCard(entry.connection, elements.connectionsList);
         continue;
@@ -4636,7 +4681,7 @@ elements.sidebarFilterClear.addEventListener('click', () => {
 
 document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
-    if (lastFocusArea === 'sidebar' && state.sidebarView === 'tables') {
+    if (lastFocusArea === 'sidebar') {
       e.preventDefault();
       state.sidebarFilterOpen = true;
       elements.sidebarFilterWrap.hidden = false;

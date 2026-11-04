@@ -14,6 +14,7 @@ Een eerste basis voor een DBeaver/SQL Ace-achtige desktop database-manager in El
 - Exporteer als CSV naast Backup tabel: alle rijen met de actieve filters en sortering, zonder de ingestelde weergavelimiet. Bij eigen SQL worden alle teruggegeven rijen geëxporteerd, inclusief alle kolommen en met behoud van een eventuele expliciete SQL-LIMIT.
 - Actieve connectie, database en tabel als breadcrumb, met een omgevingsbadge. Stel Productie, Test of Ontwikkeling in via Connectie bewerken; automatisch herkennen uit naam/groep en Geen label zijn ook beschikbaar.
 - Verbindingsstatus: grijs voor niet verbonden, groen voor actief en rood bij een verbindingsfout.
+- Zoeken in de zijbalk met `Cmd+F` (`Ctrl+F` op Windows/Linux): in de connectielijst op naam, host, database, pad of groepsnaam, en in een geopende connectie op tabelnaam. `Esc` of het kruisje sluit het zoekveld.
 - Verstelbare zijbalk met onthouden breedte. Sleep de rechterrand, gebruik de pijltjestoetsen op de scheiding of dubbelklik om de standaardbreedte te herstellen.
 - Subtiele zebra-strepen in beide thema’s, een melding wanneer de rijlimiet is bereikt en een teller voor gewijzigde cellen en nieuwe rijen naast Opslaan.
 - Per tab schakelen tussen `Data` en `Structuur`.
