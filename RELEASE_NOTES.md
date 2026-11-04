@@ -1,9 +1,13 @@
 # RemySQL {{tag}}
 
-## Zoeken in de zijbalk
+## macOS-installatie
 
-- Zoeken op verbindingen: met `Cmd+F` (`Ctrl+F` op Windows/Linux) in de zijbalk filter je nu ook de connectielijst, net zoals je binnen een connectie al op tabelnaam kon zoeken.
-- Er wordt gezocht op connectienaam en op de gegevens eronder, dus ook op host, poort, gebruiker, databasenaam of SQLite-pad.
-- Groepen blijven zichtbaar: een treffer op de groepsnaam toont de hele groep, anders toont de groep alleen de bijpassende connecties. Groepen zonder treffers verdwijnen uit de lijst.
-- Zonder treffers verschijnt "Geen resultaten". `Esc` of het kruisje sluit het zoekveld, en het zoekveld wordt gewist bij het wisselen tussen de connectielijst en de tabellijst.
-- Tijdens het zoeken staat slepen van connecties uit, zodat je in een gefilterde lijst niet per ongeluk de volgorde of groepering wijzigt.
+- De app krijgt tijdens het bouwen een geldige ad-hoc handtekening. macOS meldde eerder bij een gedownloade DMG dat RemySQL beschadigd was en naar de prullenmand moest; die melding is weg.
+- Gatekeeper vraagt nog wel om bevestiging, want de app is niet genotariseerd. Sleep de app naar Programma's en kies in Systeeminstellingen bij Privacy en beveiliging voor Toch openen, of draai `xattr -dr com.apple.quarantine /Applications/RemySQL.app`.
+- Staat er een Developer ID Application-certificaat in de keychain, dan wordt daar gewoon mee ondertekend en slaat de ad-hoc stap zichzelf over.
+
+## Releasescript
+
+- Het script opent de editor alleen nog in een echte terminal, zodat een release vanuit een script of CI niet meer vastloopt op vi.
+- Zonder terminal is een expliciete versie verplicht en wordt er niet meer om een bevestiging gevraagd.
+- Het versienummer wordt pas verhoogd nadat de release notes klaar zijn, zodat een afgebroken release geen half bijgewerkte package.json achterlaat.
