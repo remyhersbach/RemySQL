@@ -194,6 +194,10 @@ function getReleaseNotesBulletCount(version, tag) {
     .length;
 }
 
+function isInteractive() {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
 async function prompt(question, fallback = '') {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -207,6 +211,11 @@ async function prompt(question, fallback = '') {
 function openEditorIfAvailable(filePath) {
   const editor = process.env.EDITOR || process.env.VISUAL;
   if (!editor) return false;
+
+  if (!isInteractive()) {
+    console.log(`\nGeen terminal beschikbaar, dus ${editor} wordt overgeslagen.`);
+    return false;
+  }
 
   const result = spawnSync(editor, [filePath], { cwd: root, stdio: 'inherit' });
   if (result.status !== 0) {
@@ -236,7 +245,7 @@ async function prepareReleaseNotes(version, tag) {
   if (!openEditorIfAvailable(releaseNotesPath)) {
     console.log('\nRELEASE_NOTES.md wordt gebruikt als GitHub Release-body.');
     console.log('Bewerk dit bestand handmatig voordat je releaset. Tokens {{version}} en {{tag}} worden automatisch ingevuld.');
-    await prompt('Druk op Enter om door te gaan.');
+    if (isInteractive()) await prompt('Druk op Enter om door te gaan.');
   }
 
   if (!readPublishReleaseNotes(version, tag)) {
@@ -418,6 +427,10 @@ async function main() {
 
   assertCleanWorktree(releaseManagedPaths);
 
+  if (!rawBump && !isInteractive()) {
+    throw new Error('Geen terminal beschikbaar: geef de versie mee, bijvoorbeeld `node scripts/release.js patch` of `node scripts/release.js 1.2.3`.');
+  }
+
   const bump = rawBump || await prompt(`Nieuwe versie vanaf ${pkg.version} (patch/minor/major/x.y.z) [patch] `, 'patch');
   const nextVersion = bumpVersion(pkg.version, bump);
   const tag = `v${nextVersion}`;
@@ -434,8 +447,8 @@ async function main() {
   }
 
   console.log(`\nRelease voorbereiden: ${pkg.version} -> ${nextVersion}`);
-  updatePackageVersions(nextVersion);
   await prepareReleaseNotes(nextVersion, tag);
+  updatePackageVersions(nextVersion);
   prepareChangelog(nextVersion, tag);
 
   run('node', ['--check', 'src/main.js']);
