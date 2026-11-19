@@ -90,7 +90,7 @@
   },
   "devDependencies": {
     "electron": "^44.4.5",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.18.0"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
